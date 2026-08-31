@@ -1,6 +1,6 @@
 import { NavTab } from '../types';
 import { systemApiService } from './systemApiService';
-import { getFullApiUrl } from './apiConfig';
+import { getFullApiUrl, isNativeApp } from './apiConfig';
 
 export type MangaSource = 'truyenqq' | 'otruyen' | 'mangadex' | 'cuutruyen';
 
@@ -337,19 +337,22 @@ export const mangaApi = {
         } catch (e: any) {
         }
 
-        // Direct client fallback via public CORS proxy
-        try {
-          const path = keyword
-            ? `/tim-kiem/trang-${page}?q=${encodeURIComponent(keyword)}`
-            : `/truyen-moi-cap-nhat/trang-${page}`;
-          const html = await fetchTruyenqqViaPublicCORS(path);
-          if (html) {
-            const parsed = parseTruyenqqHtmlList(html);
-            if (parsed.items.length > 0) {
-              return parsed;
+        // Direct client fallback via public CORS proxy is unreliable inside Android WebView.
+        // On native app, keep only the backend proxy path to avoid broken CORS / blocked third-party requests.
+        if (!isNativeApp()) {
+          try {
+            const path = keyword
+              ? `/tim-kiem/trang-${page}?q=${encodeURIComponent(keyword)}`
+              : `/truyen-moi-cap-nhat/trang-${page}`;
+            const html = await fetchTruyenqqViaPublicCORS(path);
+            if (html) {
+              const parsed = parseTruyenqqHtmlList(html);
+              if (parsed.items.length > 0) {
+                return parsed;
+              }
             }
+          } catch (e: any) {
           }
-        } catch (e: any) {
         }
 
         // If direct CORS failed but backend had fallback (otruyen), use it before fresh OTruyen fetch — only if otruuyen still enabled
@@ -969,6 +972,12 @@ export function getMangaImageUrl(url: string): string {
   // If already relative /api/... path, resolve with getFullApiUrl
   if (u.startsWith('/')) return getFullApiUrl(u);
 
+  // Android APK WebView often blocks raw CDN image loads (MangaDex / TruyenQQ / uploads) while browsers work.
+  // Force native app traffic through the backend image proxy to keep posters and pages loading reliably.
+  if (isNativeApp() && u.startsWith('http')) {
+    return getFullApiUrl(`/api/proxy/image?url=${encodeURIComponent(u)}`);
+  }
+
   // Upgrade TruyenQQ images to highest quality and HTTPS
   if (u.includes('truyenvua.com') || u.includes('hinhhinh.com') || u.includes('truyenqq') || u.includes('80x105')) {
     return upgradeTruyenqqImageUrl(u);
@@ -989,6 +998,10 @@ export function getFallbackMangaImageUrl(url: string, currentFailedSrc?: string)
   let cleanUrl = url.trim();
   if (cleanUrl.startsWith('//')) cleanUrl = 'https:' + cleanUrl;
   if (cleanUrl.startsWith('http://')) cleanUrl = 'https://' + cleanUrl.slice(7);
+
+  if (isNativeApp() && cleanUrl.startsWith('http')) {
+    return getFullApiUrl(`/api/proxy/image?url=${encodeURIComponent(cleanUrl)}`);
+  }
 
   // Stage 1: If direct load failed (often due to referrer or CDN block), try fast global image CDN proxy (wsrv.nl strips referer and caches WebP)
   if (!currentFailedSrc || (!currentFailedSrc.includes('wsrv.nl') && !currentFailedSrc.includes('/api/proxy/image'))) {
