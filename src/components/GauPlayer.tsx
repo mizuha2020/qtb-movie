@@ -336,7 +336,20 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     setShowControls(true);
     if (hideControlsTimer.current) window.clearTimeout(hideControlsTimer.current);
     hideControlsTimer.current = window.setTimeout(() => {
-      if (!showSettings && !showServerMenu && !showEpisodes && !isDraggingRef.current) setShowControls(false);
+      if (!showSettings && !showServerMenu && !showEpisodes && !isDraggingRef.current) {
+        setShowControls(false);
+        // TV: focus đang nằm trên nút sắp ẩn (opacity-0) -> remote bấm tiếp sẽ "mất hút"
+        // + WebView vẽ viền focus mặc định (vàng) lên nút ẩn. Chuyển focus về khung player.
+        try {
+          if (document.documentElement.classList.contains('tv-mode')) {
+            const root = containerRef.current;
+            const a = document.activeElement as HTMLElement | null;
+            if (root && a && a !== root && root.contains(a)) {
+              root.focus({ preventScroll: true } as FocusOptions);
+            }
+          }
+        } catch {}
+      }
     }, 5000);
   }, [showSettings, showServerMenu, showEpisodes]);
 
@@ -1247,45 +1260,52 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       if (k === 'MediaRewind') { e.preventDefault(); skip(-10); return; }
       if (k === 'MediaFastForward') { e.preventDefault(); skip(10); return; }
       if (tv) {
-        // Focus đang nằm trên cụm controls -> arrows điều hướng focus, KHÔNG seek
-        const active = document.activeElement as HTMLElement | null;
-        const inControls = !!active?.closest?.(
-          '.tv-player-bottom, .tv-player-top, .player-menu-panel, .group\\/center-skip, .group\\/center-play',
-        );
-        const isBtn = active?.tagName === 'BUTTON';
+        const hidden = !showControlsRef.current;
+        // Quy tắc TV chuẩn (YouTube/Netflix): controls đang ẩn -> phím ĐẦU TIÊN chỉ đánh
+        // thức controls (không tua/không play), phím tiếp theo mới có tác dụng.
+        const wakeControls = () => {
+          resetControlsTimer();
+          window.setTimeout(() => {
+            try {
+              containerRef.current?.querySelector<HTMLButtonElement>('[data-tv-play]')?.focus();
+            } catch {}
+          }, 150); // box TV chậm, 60ms đôi khi chưa render xong
+        };
         if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
+          e.preventDefault();
+          if (hidden) {
+            wakeControls();
+            return;
+          }
+          // Focus đang nằm trên cụm controls -> arrows điều hướng focus, KHÔNG seek
+          const active = document.activeElement as HTMLElement | null;
+          const inControls = !!active?.closest?.(
+            '.tv-player-bottom, .tv-player-top, .player-menu-panel, .group\\/center-skip, .group\\/center-play',
+          );
+          const isBtn = active?.tagName === 'BUTTON';
           if (inControls || isBtn) {
-            // Up đầu tiên khi controls ẩn: hiện controls rồi focus nút play
-            if (!showControlsRef.current && (k === 'ArrowUp' || k === 'ArrowDown')) {
-              e.preventDefault();
-              resetControlsTimer();
-              window.setTimeout(() => {
-                const play = containerRef.current?.querySelector<HTMLButtonElement>(
-                  '[data-tv-play]',
-                );
-                play?.focus();
-              }, 60);
-              return;
-            }
-            e.preventDefault();
             const dir = k === 'ArrowLeft' ? 'left' as const : k === 'ArrowRight' ? 'right' as const : k === 'ArrowUp' ? 'up' as const : 'down' as const;
             focusNearest(dir);
             resetControlsTimer();
             return;
           }
-          // Focus ngoài controls (video-area): Up/Down hiện controls, Left/Right seek
+          // Focus ngoài controls mà controls đang hiện: Up/Down vào controls, Left/Right seek
           if (k === 'ArrowUp' || k === 'ArrowDown') {
-            e.preventDefault();
-            resetControlsTimer();
-            window.setTimeout(() => {
-              const play = containerRef.current?.querySelector<HTMLButtonElement>('[data-tv-play]');
-              play?.focus();
-            }, 60);
+            wakeControls();
             return;
           }
-          e.preventDefault();
           skip(k === 'ArrowLeft' ? -10 : 10);
           resetControlsTimer();
+          return;
+        }
+        // OK/Space khi controls ẩn -> chỉ đánh thức, không play/dừng nhầm
+        if (k === ' ' || k === 'Enter' || k === 'NumpadEnter') {
+          e.preventDefault();
+          if (hidden) {
+            wakeControls();
+            return;
+          }
+          togglePlay();
           return;
         }
       }
@@ -1310,7 +1330,8 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     <div
       ref={containerRef}
       id="gau-player-root"
-      className="fixed inset-0 z-[70] bg-black flex flex-col select-none"
+      tabIndex={-1}
+      className="fixed inset-0 z-[70] bg-black flex flex-col select-none outline-none"
       onMouseMove={isTouchDevice ? undefined : resetControlsTimer}
       onClick={isTouchDevice ? undefined : resetControlsTimer}
       onContextMenu={e => e.preventDefault()}

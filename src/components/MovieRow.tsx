@@ -43,8 +43,12 @@ export const MovieRow: React.FC<MovieRowProps> = ({
   // Native scroll cho: màn nhỏ (<1024) + MỌI thiết bị cảm ứng (pointer chính là coarse),
   // không phân biệt cỡ màn hình — màn cảm ứng càng to càng phải vuốt tự do.
   // Chỉ desktop chuột (pointer fine) mới dùng carousel transform + nút </>.
+  // TV (tv-mode) LUÔN dùng native scroll: nhẹ hơn (không nhân 3 DOM), DPAD đi 1 phát 1 item.
   const checkIsMobileOrTablet = () => {
     if (typeof window === "undefined") return false;
+    try {
+      if (document.documentElement.classList.contains("tv-mode")) return true;
+    } catch {}
     if (window.innerWidth < 1024) return true;
     try {
       if (window.matchMedia("(pointer: coarse)").matches) return true;
@@ -54,6 +58,10 @@ export const MovieRow: React.FC<MovieRowProps> = ({
     return false;
   };
   const [isMobile, setIsMobile] = useState(checkIsMobileOrTablet);
+  useEffect(() => {
+    // tv-mode bật sau mount (detect async) -> ép lại native scroll
+    if (isTv) setIsMobile(true);
+  }, [isTv]);
   useEffect(() => {
     const onResize = () => setIsMobile(checkIsMobileOrTablet());
     window.addEventListener("resize", onResize);

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Movie } from '../types';
 import { Play, Info, Plus, Check, ChevronRight, ChevronLeft, Sparkles } from 'lucide-react';
 import { getImageUrl, getTmdbAssets } from '../services/movieApi';
+import { useTvMode } from '../hooks/useTvMode';
 import { motion, AnimatePresence } from 'motion/react';
 
 const HERO_LIMIT = 10;
@@ -29,6 +30,9 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [tmdbBackdropMap, setTmdbBackdropMap] = useState<Record<string, string>>({});
   const [tmdbLogoMap, setTmdbLogoMap] = useState<Record<string, string>>({});
+  // TV box RAM yếu: dùng backdrop w1280 thay original (vài MB) cho đỡ lag/OOM
+  const isTvHero = useTvMode();
+  const heroImgSize = isTvHero ? '/w1280' : '/original';
 
   const heroMovies = useMemo(() => (movies || []).slice(0, HERO_LIMIT), [movies]);
 
@@ -63,12 +67,12 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
     const primaryCandidate = movie.backdrops?.find(b => b.primary)?.url;
     if (primaryCandidate) {
       return primaryCandidate.includes('image.tmdb.org')
-        ? (primaryCandidate.includes('/original') ? primaryCandidate : primaryCandidate.replace(/\/w\d+/, '/original'))
+        ? (primaryCandidate.includes('/original') ? primaryCandidate.replace('/original', heroImgSize) : primaryCandidate.replace(/\/w\d+/, heroImgSize))
         : primaryCandidate;
     }
     if (movie.backdrop_url) {
       return movie.backdrop_url.includes('image.tmdb.org')
-        ? (movie.backdrop_url.includes('/original') ? movie.backdrop_url : movie.backdrop_url.replace(/\/w\d+/, '/original'))
+        ? (movie.backdrop_url.includes('/original') ? movie.backdrop_url.replace('/original', heroImgSize) : movie.backdrop_url.replace(/\/w\d+/, heroImgSize))
         : movie.backdrop_url;
     }
     const tmdbFetched = tmdbBackdropMap[movie.slug];
@@ -77,10 +81,10 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
       return String((movie as any).backdropUrl);
     }
     if (movie.poster_url && movie.poster_url.includes('image.tmdb.org')) {
-      return movie.poster_url.replace(/\/w\d+/, '/original');
+      return movie.poster_url.replace(/\/w\d+/, heroImgSize);
     }
     return movie.thumb_url || movie.poster_url || '';
-  }, [tmdbBackdropMap]);
+  }, [tmdbBackdropMap, heroImgSize]);
 
   // Pre-load next & prev slide images in memory for seamless zero-flicker transitions
   useEffect(() => {

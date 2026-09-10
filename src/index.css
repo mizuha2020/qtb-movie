@@ -241,12 +241,30 @@ html.tv-mode { font-size: 18px; }
 .tv-mode .tv-player-bottom button { padding: 10px !important; min-width: 48px; min-height: 48px; }
 .tv-mode .tv-player-bottom svg { width: 28px !important; height: 28px !important; }
 .tv-mode .tv-player-bottom span { font-size: 16px !important; }
-/* Remote D-pad (bước 2): hiện nút tua ±10s vốn chỉ dành cho chuột, focus card nổi rõ */
+/* TV perf (fix lag): chip TV yếu nhất ở backdrop-blur + transition/hover + marquee chạy nền.
+   Tắt hết trên tv-mode, desktop/phone giữ nguyên. */
+.tv-mode #qtb-navbar { background: #0b1329 !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+.tv-mode .backdrop-blur-sm, .tv-mode .backdrop-blur, .tv-mode .backdrop-blur-md,
+.tv-mode .backdrop-blur-lg, .tv-mode .backdrop-blur-xl, .tv-mode .backdrop-blur-2xl {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+.tv-mode [data-tv-card], .tv-mode [data-tv-card] * { transition: none !important; }
+.tv-mode #qtb-hero-banner, .tv-mode #qtb-hero-banner * { transition: none !important; }
+.tv-mode .group\/row, .tv-mode .group\/row * { transition-duration: 0.01ms !important; }
+.tv-mode .animate-cucumber-marquee { animation: none !important; }
+.tv-mode .animate-pulse { animation-duration: 2.5s !important; }
 .tv-mode .tv-player-bottom .tv-seek-btn { display: flex !important; }
 .tv-mode [data-tv-card] { scroll-margin: 24px; border-radius: 12px; }
-.tv-mode [data-tv-card]:focus { transform: scale(1.08); z-index: 20; position: relative; }
+.tv-mode [data-tv-card]:focus { z-index: 20; position: relative; }
 .tv-mode [data-tv-card]:focus-visible { outline: 4px solid #38bdf8 !important; outline-offset: 4px !important; }
 .tv-mode #gau-player-root button:focus-visible { outline: 4px solid #38bdf8 !important; outline-offset: 2px !important; }
+/* Khung player/video không bao giờ vẽ viền focus (WebView TV hay vẽ viền vàng mặc định) */
+.tv-mode #gau-player-root:focus, .tv-mode #gau-player-root video:focus,
+.tv-mode #gau-player-root .video-area:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
 /* 10-foot typography + overscan (bước 3): ngồi 3m vẫn đọc được, TV cũ không cắt viền */
 /* Navbar: nút to, chữ to, chừa safe-area */
 .tv-mode #qtb-navbar { padding-left: max(2.5vw, 24px) !important; padding-right: max(2.5vw, 24px) !important; }

@@ -82,12 +82,13 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
       id={`movie-card-${movie.slug || movie._id}`}
       tabIndex={0}
       data-tv-card={movie.slug || movie._id}
-      className={`relative group shrink-0 select-none transition-all duration-300 focus:outline-none focus:ring-4 focus:ring-blue-500 focus:z-10 ${isTv ? 'focus:scale-110 focus:ring-[6px]' : 'focus:scale-105'} ${
+      className={`relative group shrink-0 select-none focus:outline-none focus:ring-4 focus:ring-blue-500 focus:z-10 ${isTv ? 'focus:ring-[6px]' : 'transition-all duration-300 focus:scale-105'} ${
         isTop10 ? 'w-44 sm:w-56 h-64 sm:h-80' : 'w-36 sm:w-48 md:w-52'
       }`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={() => setIsHovered(false)}
-      onFocus={() => { updatePosition(); setIsHovered(true); }}
+      // TV: không popup hover (vừa lag vừa kẹt focus qua nút ẩn -> tốn 2 lần bấm DPAD)
+      onFocus={() => { if (!isTv) { updatePosition(); setIsHovered(true); } }}
       onBlur={() => setIsHovered(false)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
@@ -171,7 +172,7 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
         </div>
       </div>
 
-      {isHovered && hoverPos && (
+      {!isTv && isHovered && hoverPos && (
         <div
           className="hidden md:block fixed bg-[#0f172a] rounded-xl shadow-2xl border border-blue-900/80 p-3 z-50 animate-in fade-in zoom-in-95 duration-200"
           style={{

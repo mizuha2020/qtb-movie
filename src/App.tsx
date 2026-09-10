@@ -58,6 +58,7 @@ import { FollowedRow } from "./components/FollowedRow";
 import { Capacitor } from "@capacitor/core";
 import { applyTvClass } from "./utils/tvDetect";
 import { useTvRemoteNav } from "./hooks/useTvRemote";
+import { useTvMode } from "./hooks/useTvMode";
 import { App as CapApp } from "@capacitor/app";
 import { appNavigate } from "./routerNav";
 import { RouteSync } from "./components/RouteSync";
@@ -88,6 +89,8 @@ import {
 export default function App() {
   // Apply TV 10-foot class on mount + điều hướng remote D-pad
   useTvRemoteNav();
+  // TV box yếu: render hàng nhẹ (MovieRow native) thay carousel 3D/Swiper
+  const isTvView = useTvMode();
   useEffect(() => {
     try {
       applyTvClass();
@@ -2228,12 +2231,25 @@ export default function App() {
 
                     {/* Categorized Rows */}
                     <div className="space-y-4">
-                      <Theater3DCarousel
-                        title="Top Phim Hot Nhất Hôm Nay"
-                        movies={topHotAll}
-                        onOpenDetail={(m) => openDetailModal(m)}
-                        onPlay={handlePlayMovie}
-                      />
+                      {isTvView ? (
+                        <MovieRow
+                          title="Top Phim Hot Nhất Hôm Nay"
+                          movies={topHotAll}
+                          onOpenDetail={(m) => openDetailModal(m)}
+                          onSelectMovie={(m) => openDetailModal(m)}
+                          onPlay={handlePlayMovie}
+                          onPlayMovie={handlePlayMovie}
+                          onToggleMyList={handleToggleMyList}
+                          isInMyList={isInMyList}
+                        />
+                      ) : (
+                        <Theater3DCarousel
+                          title="Top Phim Hot Nhất Hôm Nay"
+                          movies={topHotAll}
+                          onOpenDetail={(m) => openDetailModal(m)}
+                          onPlay={handlePlayMovie}
+                        />
+                      )}
 
                       <Top10Carousel
                         title="Top 10 Phim Bộ Hôm Nay"
@@ -2359,12 +2375,25 @@ export default function App() {
                         isInMyList={isInMyList}
                       />
 
-                      <CinematicCarousel
-                        title="Mãn Nhãn Phim Chiếu Rạp"
-                        movies={theaterList}
-                        onOpenDetail={(m) => openDetailModal(m)}
-                        onPlay={handlePlayMovie}
-                      />
+                      {isTvView ? (
+                        <MovieRow
+                          title="Mãn Nhãn Phim Chiếu Rạp"
+                          movies={theaterList}
+                          onOpenDetail={(m) => openDetailModal(m)}
+                          onSelectMovie={(m) => openDetailModal(m)}
+                          onPlay={handlePlayMovie}
+                          onPlayMovie={handlePlayMovie}
+                          onToggleMyList={handleToggleMyList}
+                          isInMyList={isInMyList}
+                        />
+                      ) : (
+                        <CinematicCarousel
+                          title="Mãn Nhãn Phim Chiếu Rạp"
+                          movies={theaterList}
+                          onOpenDetail={(m) => openDetailModal(m)}
+                          onPlay={handlePlayMovie}
+                        />
+                      )}
                     </div>
                   </>
                 )}

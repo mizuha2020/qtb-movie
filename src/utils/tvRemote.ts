@@ -121,7 +121,8 @@ export function focusNearest(dir: TvDirection): boolean {
         best.focus();
       }
       try {
-        best.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+        // Scroll instant (không smooth): box TV yếu, smooth gây khựng + trễ focus
+        best.scrollIntoView({ block: 'nearest', inline: 'center' });
       } catch {}
       return true;
     }
@@ -218,6 +219,32 @@ export function handleTvKey(e: KeyboardEvent): boolean {
   if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
     const dir: TvDirection =
       k === 'ArrowLeft' ? 'left' : k === 'ArrowRight' ? 'right' : k === 'ArrowUp' ? 'up' : 'down';
+    // Fast-path O(1): đang đứng trên card mà đi ngang -> qua card kề trong cùng hàng,
+    // khỏi đo rect cả trăm nút (đây là thao tác bấm nhiều nhất trên TV).
+    const active = document.activeElement as HTMLElement | null;
+    if (active?.hasAttribute?.('data-tv-card') && (dir === 'left' || dir === 'right')) {
+      try {
+        const row = active.parentElement?.parentElement as HTMLElement | null;
+        const cards = row
+          ? (Array.from(row.querySelectorAll('[data-tv-card]')) as HTMLElement[]).filter(
+              (c) => c.offsetParent !== null || c.getClientRects().length > 0,
+            )
+          : [];
+        const i = cards.indexOf(active);
+        const next = cards[i + (dir === 'right' ? 1 : -1)];
+        if (next) {
+          try {
+            next.focus({ preventScroll: true } as FocusOptions);
+          } catch {
+            next.focus();
+          }
+          try {
+            next.scrollIntoView({ block: 'nearest', inline: 'center' });
+          } catch {}
+          return true;
+        }
+      } catch {}
+    }
     return focusNearest(dir);
   }
 
