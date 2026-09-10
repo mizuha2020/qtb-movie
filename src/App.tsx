@@ -1232,7 +1232,19 @@ export default function App() {
             setShowExitConfirmModal(false);
           } else if (playingMovie || selectedMovieForDetail) {
             // Player/detail đóng theo URL thật (deep-link được) thay vì history.back() mù
-            if (playingMovie) navActionsRef.current.closePlayer();
+            if (playingMovie) {
+              // TV 2 nấc kiểu Netflix: overlay ẩn -> Back chỉ mở overlay; hiện -> mới thoát
+              try {
+                if (document.documentElement.classList.contains("tv-mode")) {
+                  const root = document.getElementById("gau-player-root");
+                  if (root && root.getAttribute("data-controls") === "hidden") {
+                    window.dispatchEvent(new Event("gau_tv_wake_player"));
+                    return;
+                  }
+                }
+              } catch {}
+              navActionsRef.current.closePlayer();
+            }
             else navActionsRef.current.closeDetailModal();
           } else if (
             showAdminDashboard ||
@@ -2097,6 +2109,15 @@ export default function App() {
                               return (
                                 <div
                                   key={`${item.movieSlug}-${idx}`}
+                                  tabIndex={0}
+                                  data-tv-card={`history-${item.movieSlug}`}
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter" || e.key === "NumpadEnter" || e.key === " ") {
+                                      e.preventDefault();
+                                      handleResumeHistoryItem(item);
+                                      handleFollowSeen(item.movieSlug, item.episodeName);
+                                    }
+                                  }}
                                   onClick={() => {
                                     handleResumeHistoryItem(item);
                                     handleFollowSeen(
@@ -2104,7 +2125,7 @@ export default function App() {
                                       item.episodeName,
                                     );
                                   }}
-                                  className="group relative w-64 shrink-0 bg-[#0f172a] rounded-2xl overflow-hidden border border-blue-900/50 hover:border-blue-500/80 transition-all cursor-pointer shadow-md hover:scale-105"
+                                  className="group relative w-64 shrink-0 bg-[#0f172a] rounded-2xl overflow-hidden border border-blue-900/50 hover:border-blue-500/80 transition-all cursor-pointer shadow-md hover:scale-105 focus:outline-none focus:ring-4 focus:ring-blue-500"
                                 >
                                   <div className="relative aspect-video w-full">
                                     <img

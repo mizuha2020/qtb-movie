@@ -1104,6 +1104,21 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     };
   }, []);
 
+  // TV: App (nút Back native) gọi đánh thức overlay qua event này
+  // (Back nấc 1 mở overlay, nấc 2 mới thoát — xem backButton handler trong App).
+  useEffect(() => {
+    const wake = () => {
+      resetControlsTimer();
+      window.setTimeout(() => {
+        try {
+          containerRef.current?.querySelector<HTMLButtonElement>('[data-tv-play]')?.focus();
+        } catch {}
+      }, 150);
+    };
+    window.addEventListener('gau_tv_wake_player' as any, wake as any);
+    return () => window.removeEventListener('gau_tv_wake_player' as any, wake as any);
+  }, [resetControlsTimer]);
+
   // Mở player là hẹn giờ tự ẩn controls (kẻo hiện mãi nếu không chạm gì)
   useEffect(() => {
     resetControlsTimer();
@@ -1247,10 +1262,20 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       const tv = isTvModeActive();
       const k = e.key;
       const kc = (e as any).keyCode;
-      // Nút Back của remote TV (browser): Escape / GoBack / Tizen 10009 / LG 461
+      // Nút Back của remote TV (browser): Escape / GoBack / Tizen 10009 / LG 461.
+      // 2 nấc kiểu Netflix: overlay ẩn -> Back chỉ mở overlay; overlay hiện -> Back thoát về chi tiết.
       if (tv && (k === 'GoBack' || k === 'BrowserBack' || kc === 10009 || kc === 461)) {
         e.preventDefault();
-        onBackRef.current();
+        if (!showControlsRef.current) {
+          resetControlsTimer();
+          window.setTimeout(() => {
+            try {
+              containerRef.current?.querySelector<HTMLButtonElement>('[data-tv-play]')?.focus();
+            } catch {}
+          }, 150);
+        } else {
+          onBackRef.current();
+        }
         return;
       }
       // Media keys remote
@@ -1261,8 +1286,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       if (k === 'MediaFastForward') { e.preventDefault(); skip(10); return; }
       if (tv) {
         const hidden = !showControlsRef.current;
-        // Quy tắc TV chuẩn (YouTube/Netflix): controls đang ẩn -> phím ĐẦU TIÊN chỉ đánh
-        // thức controls (không tua/không play), phím tiếp theo mới có tác dụng.
         const wakeControls = () => {
           resetControlsTimer();
           window.setTimeout(() => {
@@ -1271,38 +1294,55 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             } catch {}
           }, 150); // box TV chậm, 60ms đôi khi chưa render xong
         };
-        if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
+        // Spec Netflix: ←/→ LUÔN tua ±10s (kể cả khi overlay hiện) + hiện overlay.
+        if (k === 'ArrowLeft' || k === 'ArrowRight') {
+          e.preventDefault();
+          skip(k === 'ArrowLeft' ? -10 : 10);
+          if (hidden) wakeControls();
+          else resetControlsTimer();
+          try {
+            showGestureToast(k === 'ArrowLeft' ? 'Tua lại 10 giây' : 'Tua tới 10 giây');
+          } catch {}
+          flashSeek(k === 'ArrowLeft' ? -10 : 10);
+          return;
+        }
+        // ↑/↓: ẩn -> hiện overlay; hiện -> đi vào / di chuyển trong cụm tùy chọn.
+        if (k === 'ArrowUp' || k === 'ArrowDown') {
           e.preventDefault();
           if (hidden) {
             wakeControls();
             return;
           }
-          // Focus đang nằm trên cụm controls -> arrows điều hướng focus, KHÔNG seek
           const active = document.activeElement as HTMLElement | null;
           const inControls = !!active?.closest?.(
             '.tv-player-bottom, .tv-player-top, .player-menu-panel, .group\\/center-skip, .group\\/center-play',
           );
           const isBtn = active?.tagName === 'BUTTON';
           if (inControls || isBtn) {
-            const dir = k === 'ArrowLeft' ? 'left' as const : k === 'ArrowRight' ? 'right' as const : k === 'ArrowUp' ? 'up' as const : 'down' as const;
+            const dir = k === 'ArrowUp' ? 'up' as const : 'down' as const;
             focusNearest(dir);
             resetControlsTimer();
             return;
           }
-          // Focus ngoài controls mà controls đang hiện: Up/Down vào controls, Left/Right seek
-          if (k === 'ArrowUp' || k === 'ArrowDown') {
+          wakeControls();
+          return;
+        }
+        // OK: ẩn -> chỉ đánh thức; hiện -> nút thì để browser click, card thì click tay, còn lại play/dừng.
+        if (k === ' ' || k === 'Enter' || k === 'NumpadEnter') {
+          if (hidden) {
+            e.preventDefault();
             wakeControls();
             return;
           }
-          skip(k === 'ArrowLeft' ? -10 : 10);
-          resetControlsTimer();
-          return;
-        }
-        // OK/Space khi controls ẩn -> chỉ đánh thức, không play/dừng nhầm
-        if (k === ' ' || k === 'Enter' || k === 'NumpadEnter') {
+          const active = document.activeElement as HTMLElement | null;
+          if (active && (active.tagName === 'BUTTON' || active.tagName === 'A')) {
+            return; // browser tự click, không chặn
+          }
           e.preventDefault();
-          if (hidden) {
-            wakeControls();
+          if (active && active.hasAttribute('data-tv-card')) {
+            try {
+              active.click();
+            } catch {}
             return;
           }
           togglePlay();
@@ -1331,6 +1371,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       ref={containerRef}
       id="gau-player-root"
       tabIndex={-1}
+      data-controls={showControls ? 'shown' : 'hidden'}
       className="fixed inset-0 z-[70] bg-black flex flex-col select-none outline-none"
       onMouseMove={isTouchDevice ? undefined : resetControlsTimer}
       onClick={isTouchDevice ? undefined : resetControlsTimer}

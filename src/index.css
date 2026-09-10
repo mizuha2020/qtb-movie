@@ -195,9 +195,17 @@ html.tv-mode { font-size: 18px; }
   }
 }
 .tv-mode *:focus-visible {
-  outline: 4px solid #38bdf8 !important;
-  outline-offset: 3px !important;
-  box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.35), 0 0 24px rgba(56, 189, 248, 0.6) !important;
+  outline: 2px solid rgba(125, 211, 252, 0.9) !important;
+  outline-offset: 2px !important;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.35) !important;
+}
+/* Navbar TV kiểu Netflix: nút focus highlight nền (đậm/sáng hơn), KHÔNG outline */
+.tv-mode #qtb-navbar button:focus,
+.tv-mode #qtb-navbar button:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  background-color: rgba(37, 99, 235, 0.4) !important;
+  color: #fff !important;
 }
 @media (min-width: 1920px) {
   *:focus-visible {
@@ -256,9 +264,16 @@ html.tv-mode { font-size: 18px; }
 .tv-mode .animate-pulse { animation-duration: 2.5s !important; }
 .tv-mode .tv-player-bottom .tv-seek-btn { display: flex !important; }
 .tv-mode [data-tv-card] { scroll-margin: 24px; border-radius: 12px; }
-.tv-mode [data-tv-card]:focus { z-index: 20; position: relative; }
-.tv-mode [data-tv-card]:focus-visible { outline: 4px solid #38bdf8 !important; outline-offset: 4px !important; }
-.tv-mode #gau-player-root button:focus-visible { outline: 4px solid #38bdf8 !important; outline-offset: 2px !important; }
+/* Focus card kiểu Netflix: chỉ zoom (không viền), transition riêng transform cho mượt */
+.tv-mode [data-tv-card]:focus,
+.tv-mode [data-tv-card]:focus-visible {
+  z-index: 20;
+  position: relative;
+  transform: scale(1.07);
+  outline: none !important;
+  box-shadow: none !important;
+}
+.tv-mode [data-tv-card] { transition: transform 0.18s ease-out !important; }
 /* Khung player/video không bao giờ vẽ viền focus (WebView TV hay vẽ viền vàng mặc định) */
 .tv-mode #gau-player-root:focus, .tv-mode #gau-player-root video:focus,
 .tv-mode #gau-player-root .video-area:focus {

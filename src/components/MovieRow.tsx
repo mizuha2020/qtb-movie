@@ -85,7 +85,7 @@ export const MovieRow: React.FC<MovieRowProps> = ({
         document.documentElement.classList.contains("tv-mode");
       if (isTvScreen) {
         // TV gọn kiểu Netflix: card 176px -> 1 màn hình thấy ~10 card + 3-4 hàng
-        setGap(16);
+        setGap(24);
         setItemWidth(176);
         return;
       }

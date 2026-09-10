@@ -46,10 +46,9 @@ function isVisible(el: HTMLElement): boolean {
     if (r.width <= 4 || r.height <= 4) return false;
     const st = window.getComputedStyle(el);
     if (st.visibility === 'hidden' || st.display === 'none' || st.opacity === '0') return false;
-    // Lọc card nhân bản của carousel loop đang bị translate ra ngoài màn hình
-    const m = 80;
-    if (r.right < -m || r.left > window.innerWidth + m) return false;
-    if (r.bottom < -m || r.top > window.innerHeight + m) return false;
+    // KHÔNG lọc theo viewport: item dưới fold là target hợp lệ, bấm 1 phát là
+    // focus nhảy tới + tvScrollIntoView cuộn theo. (Lọc viewport từng làm DPAD
+    // xuống hàng chỉ cuộn chay mà không đổi focus.)
     return true;
   } catch {
     return false;
@@ -83,18 +82,61 @@ export function tvScrollIntoView(el: HTMLElement) {
     if (r.top < topSafe) dy = r.top - topSafe;
     else if (r.bottom > vh - bottomSafe) dy = r.bottom - (vh - bottomSafe);
     if (dy !== 0) window.scrollBy(0, Math.round(dy));
-    // Ngang: căn giữa item trong container cuộn gần nhất (hàng phim)
+    // Ngang: căn giữa item trong MỌI tổ tiên cuộn được (thường chỉ có hàng phim).
+    // Ép instant: hàng có CSS scroll-behavior:smooth sẽ biến gán scrollLeft
+    // thành cuộn từ từ, box yếu bò mãi không tới.
+    const setInstantScrollLeft = (p: HTMLElement, target: number) => {
+      try {
+        const prev = p.style.scrollBehavior;
+        p.style.scrollBehavior = 'auto';
+        p.scrollLeft = target;
+        p.style.scrollBehavior = prev;
+      } catch {
+        try {
+          p.scrollLeft = target;
+        } catch {}
+      }
+    };
     let p: HTMLElement | null = el.parentElement;
+    let firstScrollable: HTMLElement | null = null;
+    let firstTarget = 0;
     while (p && p !== document.body && p !== document.documentElement) {
       try {
         if (p.scrollWidth > p.clientWidth + 8) {
           const pr = p.getBoundingClientRect();
-          const target = p.scrollLeft + (r.left - pr.left) - (pr.width - r.width) / 2;
-          p.scrollLeft = Math.max(0, Math.round(target));
-          break;
+          const target = Math.max(
+            0,
+            Math.round(p.scrollLeft + (r.left - pr.left) - (pr.width - r.width) / 2),
+          );
+          if (!firstScrollable) {
+            firstScrollable = p;
+            firstTarget = target;
+          }
+          setInstantScrollLeft(p, target);
         }
       } catch {}
       p = p.parentElement;
+    }
+    // Máy chậm layout chưa kịp: kiểm tra lại sau 1 frame, chưa tới thì đẩy tiếp.
+    if (firstScrollable) {
+      const fp = firstScrollable;
+      const ft = firstTarget;
+      const fel = el;
+      window.requestAnimationFrame(() => {
+        try {
+          if (Math.abs(fp.scrollLeft - ft) > 4) setInstantScrollLeft(fp, ft);
+          else {
+            const rr = fel.getBoundingClientRect();
+            const pr2 = fp.getBoundingClientRect();
+            if (rr.left < pr2.left - 4 || rr.right > pr2.right + 4) {
+              setInstantScrollLeft(
+                fp,
+                Math.max(0, Math.round(fp.scrollLeft + (rr.left - pr2.left) - (pr2.width - rr.width) / 2)),
+              );
+            }
+          }
+        } catch {}
+      });
     }
   } catch {}
 }
@@ -255,7 +297,11 @@ export function handleTvKey(e: KeyboardEvent): boolean {
             )
           : [];
         const i = cards.indexOf(active);
-        const next = cards[i + (dir === 'right' ? 1 : -1)];
+        // Hết hàng thì vòng lại đầu/cuối (kiểu Netflix, không bao giờ kẹt)
+        let next = cards[i + (dir === 'right' ? 1 : -1)];
+        if (!next && cards.length > 1) {
+          next = dir === 'right' ? cards[0] : cards[cards.length - 1];
+        }
         if (next) {
           try {
             next.focus({ preventScroll: true } as FocusOptions);
