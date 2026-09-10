@@ -4,7 +4,6 @@ import { Account } from '../types';
 import { Lock, User, KeyRound, ShieldAlert, Sparkles, ShieldCheck, Eye, EyeOff, Smartphone } from 'lucide-react';
 import { motion } from 'motion/react';
 import { TvPairCodePanel } from './TvPairCodePanel';
-import { ApkDownloadSection } from './ApkDownloadSection';
 import { useTvMode } from '../hooks/useTvMode';
 import appLogo from '../assets/images/app_logo.jpg';
 
@@ -232,9 +231,6 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess }) => {
               <span>Hệ thống chỉ cho phép đăng nhập, không mở đăng ký tự do.</span>
             </div>
           </div>
-
-          {/* Tải APK cho TV */}
-          <ApkDownloadSection />
         </motion.div>
       </div>
     </div>

@@ -1,8 +1,5 @@
 name: Build Android APK
 
-permissions:
-  contents: write
-
 on:
   push:
     branches: [ main, master, tv ]
@@ -66,14 +63,4 @@ jobs:
           name: QTB-Cinema-Android-App
           path: android/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
-
-      # Gắn APK vào Release "tv-apk" để nút "Tải APK cho TV" trong app luôn có link mới nhất
-      - name: Publish APK to rolling release
-        if: github.ref == 'refs/heads/tv'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          APK=android/app/build/outputs/apk/debug/app-debug.apk
-          gh release view tv-apk >/dev/null 2>&1 || gh release create tv-apk --title "TV APK (auto build)" --notes "APK mới nhất từ branch tv. Cài lên TV/box để dùng." --prerelease
-          gh release upload tv-apk "$APK" --clobber
 
