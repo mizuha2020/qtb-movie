@@ -82,8 +82,8 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
       id={`movie-card-${movie.slug || movie._id}`}
       tabIndex={0}
       data-tv-card={movie.slug || movie._id}
-      className={`relative group shrink-0 select-none focus:outline-none focus:ring-4 focus:ring-blue-500 focus:z-10 ${isTv ? 'focus:ring-[6px]' : 'transition-all duration-300 focus:scale-105'} ${
-        isTop10 ? 'w-44 sm:w-56 h-64 sm:h-80' : 'w-36 sm:w-48 md:w-52'
+      className={`relative group shrink-0 select-none focus:outline-none focus:ring-4 focus:ring-blue-500 focus:z-10 ${isTv ? 'w-44 focus:ring-[6px]' : 'transition-all duration-300 focus:scale-105'} ${
+        isTv ? '' : isTop10 ? 'w-44 sm:w-56 h-64 sm:h-80' : 'w-36 sm:w-48 md:w-52'
       }`}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={() => setIsHovered(false)}
@@ -99,7 +99,7 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
         // không xử lý cục bộ để tránh double-focus với bản loop 3x.
       }}
     >
-      {isTop10 && rank !== undefined && (
+      {!isTv && isTop10 && rank !== undefined && (
         <div className="absolute left-0 bottom-0 top-0 w-20 sm:w-28 flex items-center justify-start pointer-events-none z-10">
           <span
             className="text-7xl sm:text-9xl font-black italic tracking-tighter text-[#070b16] select-none"
@@ -115,7 +115,7 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
 
       <div
         className={`relative w-full h-full rounded-xl overflow-hidden bg-[#0f172a] border border-slate-800/90 shadow-md transition-all duration-300 group-hover:shadow-[0_0_25px_rgba(37,99,235,0.3)] group-hover:border-blue-500/60 ${
-          isTop10 ? 'ml-16 sm:ml-20 w-[calc(100%-4rem)] sm:w-[calc(100%-5rem)]' : 'aspect-[2/3]'
+          !isTv && isTop10 ? 'ml-16 sm:ml-20 w-[calc(100%-4rem)] sm:w-[calc(100%-5rem)]' : 'aspect-[2/3]'
         }`}
         onClick={handleOpenDetail}
       >

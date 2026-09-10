@@ -9,6 +9,7 @@ import React, {
 import { Movie } from "../types";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { getImageUrl } from "../services/movieApi";
+import { useTvMode } from "../hooks/useTvMode";
 import { smoothScrollHorizontal } from "../utils/scrollUtils";
 
 interface Top10CarouselProps {
@@ -30,8 +31,13 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
   // Native scroll cho: màn nhỏ (<1024) + MỌI thiết bị cảm ứng (pointer chính là coarse),
   // không phân biệt cỡ màn hình — màn cảm ứng càng to càng phải vuốt tự do.
   // Chỉ desktop chuột (pointer fine) mới dùng carousel transform + nút </>.
+  // TV ép native scroll: nhẹ hơn (không nhân 3 DOM), DPAD đi 1 phát 1 item.
+  const isTv = useTvMode();
   const checkIsMobileOrTablet = () => {
     if (typeof window === "undefined") return false;
+    try {
+      if (document.documentElement.classList.contains("tv-mode")) return true;
+    } catch {}
     if (window.innerWidth < 1024) return true;
     try {
       if (window.matchMedia("(pointer: coarse)").matches) return true;
@@ -41,6 +47,9 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
     return false;
   };
   const [isMobile, setIsMobile] = useState(checkIsMobileOrTablet);
+  useEffect(() => {
+    if (isTv) setIsMobile(true);
+  }, [isTv]);
   useEffect(() => {
     const onResize = () => setIsMobile(checkIsMobileOrTablet());
     window.addEventListener("resize", onResize);
@@ -402,11 +411,11 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
             {top10Movies.map((movie, index) => (
               <div
                 key={`${movie.slug || "top10"}-${index}`}
-                className="relative flex-shrink-0 w-64 h-80 flex items-end"
+                className={`relative flex-shrink-0 flex items-end ${isTv ? "w-44 h-60" : "w-64 h-80"}`}
               >
                 <div className="absolute left-0 bottom-0 z-0 flex items-center justify-start h-full">
                   <span
-                    className="text-[12rem] font-black italic text-black select-none"
+                    className={`font-black italic text-black select-none ${isTv ? "text-[8rem]" : "text-[12rem]"}`}
                     style={{
                       WebkitTextStroke: `3px ${accentColor}`,
                       textShadow: `0 0 24px ${accentColor}80`,
@@ -416,7 +425,15 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
                   </span>
                 </div>
                 <div
-                  className="relative z-10 ml-16 w-48 h-72 rounded-lg overflow-hidden cursor-pointer shadow-2xl transition-transform hover:scale-105 bg-[#0f172a]"
+                  tabIndex={0}
+                  data-tv-card={movie.slug}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === "NumpadEnter" || e.key === " ") {
+                      e.preventDefault();
+                      handleClickItem(movie);
+                    }
+                  }}
+                  className={`relative z-10 rounded-lg overflow-hidden cursor-pointer shadow-2xl bg-[#0f172a] focus:outline-none focus:ring-4 focus:ring-blue-500 ${isTv ? "ml-10 w-32 h-48" : "ml-16 w-48 h-72 transition-transform hover:scale-105"}`}
                   onClick={() => handleClickItem(movie)}
                 >
                   <img
@@ -503,11 +520,11 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
               return (
                 <div
                   key={`${movie.slug || "top10"}-${idx}`}
-                  className="relative flex-shrink-0 w-64 h-80 flex items-end overflow-visible"
+                  className={`relative flex-shrink-0 flex items-end overflow-visible ${isTv ? "w-44 h-60" : "w-64 h-80"}`}
                 >
                   <div className="absolute -left-8 bottom-6 z-0 flex items-center justify-start h-72 overflow-visible">
                     <span
-                      className="text-[15rem] leading-none font-black italic text-black select-none block"
+                      className={`leading-none font-black italic text-black select-none block ${isTv ? "text-[8rem]" : "text-[15rem]"}`}
                       style={{
                         WebkitTextStroke: `3px ${accentColor}`,
                         textShadow: `0 0 24px ${accentColor}80`,
@@ -518,7 +535,15 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
                     </span>
                   </div>
                   <div
-                    className="relative z-10 ml-16 w-48 h-72 rounded-lg overflow-hidden cursor-pointer shadow-2xl transition-transform hover:scale-105 bg-[#0f172a]"
+                    tabIndex={0}
+                    data-tv-card={movie.slug}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === "NumpadEnter" || e.key === " ") {
+                        e.preventDefault();
+                        handleClickItem(movie);
+                      }
+                    }}
+                    className={`relative z-10 rounded-lg overflow-hidden cursor-pointer shadow-2xl bg-[#0f172a] focus:outline-none focus:ring-4 focus:ring-blue-500 ${isTv ? "ml-10 w-32 h-48" : "ml-16 w-48 h-72 transition-transform hover:scale-105"}`}
                     onClick={() => handleClickItem(movie)}
                   >
                     <img

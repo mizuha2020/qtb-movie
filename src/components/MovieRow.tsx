@@ -84,8 +84,9 @@ export const MovieRow: React.FC<MovieRowProps> = ({
         window.innerWidth >= 1920 ||
         document.documentElement.classList.contains("tv-mode");
       if (isTvScreen) {
-        setGap(isTop10 ? 40 : 28);
-        setItemWidth(isTop10 ? 280 : 260);
+        // TV gọn kiểu Netflix: card 176px -> 1 màn hình thấy ~10 card + 3-4 hàng
+        setGap(16);
+        setItemWidth(176);
         return;
       }
       setGap(mobile ? (isTop10 ? 20 : 16) : isTop10 ? 32 : 24);
@@ -103,9 +104,7 @@ export const MovieRow: React.FC<MovieRowProps> = ({
   }, [isTop10]);
 
   const rowHeightClass = isTv
-    ? isTop10
-      ? "h-[380px]"
-      : "h-[400px]"
+    ? "h-[300px]"
     : isTop10
     ? "h-[300px] sm:h-[360px]"
     : "h-[250px] sm:h-[330px] md:h-[360px]";

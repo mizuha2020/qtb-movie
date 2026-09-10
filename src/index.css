@@ -215,8 +215,8 @@ html.tv-mode { font-size: 18px; }
 /* TV buttons: KHÔNG đặt min-height toàn cục (từng làm dots hero h-1.5 bị kéo thành thanh dọc 48px).
    Nút player đã có rule riêng (.tv-player-bottom button), nút </> carousel đã cao sẵn (h-14+). */
 #qtb-hero-banner button { min-height: 0; }
-/* HeroBanner TV: larger 10ft */
-.tv-mode #qtb-hero-banner { min-height: 640px !important; height: 82vh !important; max-height: 860px !important; }
+/* HeroBanner TV: gọn để thấy nhiều hàng phim (kiểu Netflix) */
+.tv-mode #qtb-hero-banner { min-height: 440px !important; height: 64vh !important; max-height: 640px !important; }
 .tv-mode #qtb-hero-banner h1 { font-size: 3.75rem !important; line-height: 1.1 !important; }
 @media (min-width: 1920px) {
   #qtb-hero-banner { min-height: 640px !important; height: 82vh !important; max-height: 860px !important; }
