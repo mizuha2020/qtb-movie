@@ -70,7 +70,79 @@ function center(r: DOMRect) {
 }
 
 /** Cuộn trang + hàng ngang để focus luôn nhìn thấy (không dùng scrollIntoView:
- *  block:'nearest' trên WebView TV lúc cuộn lúc không). Mỗi lần bấm = màn hình đi theo. */
+ *  block:'nearest' trên WebView TV lúc cuộn lúc không). Mỗi lần bấm = màn hình đi theo.
+ *  Tween tay 200ms ease-out: mượt hơn instant (giật) mà không bò như smooth của browser.
+ *  Bấm dồn thì tween cũ bị hủy, nối tiếp từ vị trí hiện tại. */
+const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+const TV_SCROLL_MS = 200;
+
+function reduceMotion(): boolean {
+  try {
+    return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  } catch {
+    return false;
+  }
+}
+
+let winScrollRaf = 0;
+function smoothWindowScrollBy(dy: number) {
+  try {
+    cancelAnimationFrame(winScrollRaf);
+    if (!dy) return;
+    if (reduceMotion()) {
+      window.scrollBy(0, Math.round(dy));
+      return;
+    }
+    const from = window.scrollY || window.pageYOffset || 0;
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const p = Math.min(1, (t - t0) / TV_SCROLL_MS);
+      window.scrollTo(0, Math.round(from + dy * easeOutCubic(p)));
+      if (p < 1) winScrollRaf = requestAnimationFrame(step);
+    };
+    winScrollRaf = requestAnimationFrame(step);
+  } catch {
+    try {
+      window.scrollBy(0, Math.round(dy));
+    } catch {}
+  }
+}
+
+const rowRafs = new WeakMap<HTMLElement, number>();
+function smoothRowScrollTo(el: HTMLElement, to: number) {
+  try {
+    const prev = rowRafs.get(el);
+    if (prev) cancelAnimationFrame(prev);
+    const from = el.scrollLeft;
+    const d = to - from;
+    if (!d) return;
+    if (reduceMotion()) {
+      el.scrollLeft = to;
+      return;
+    }
+    try {
+      el.style.scrollBehavior = 'auto';
+    } catch {}
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const p = Math.min(1, (t - t0) / TV_SCROLL_MS);
+      el.scrollLeft = Math.round(from + d * easeOutCubic(p));
+      if (p < 1) {
+        rowRafs.set(el, requestAnimationFrame(step));
+      } else {
+        try {
+          el.style.scrollBehavior = '';
+        } catch {}
+      }
+    };
+    rowRafs.set(el, requestAnimationFrame(step));
+  } catch {
+    try {
+      el.scrollLeft = to;
+    } catch {}
+  }
+}
+
 export function tvScrollIntoView(el: HTMLElement) {
   try {
     const r = el.getBoundingClientRect();
@@ -81,62 +153,20 @@ export function tvScrollIntoView(el: HTMLElement) {
     let dy = 0;
     if (r.top < topSafe) dy = r.top - topSafe;
     else if (r.bottom > vh - bottomSafe) dy = r.bottom - (vh - bottomSafe);
-    if (dy !== 0) window.scrollBy(0, Math.round(dy));
-    // Ngang: căn giữa item trong MỌI tổ tiên cuộn được (thường chỉ có hàng phim).
-    // Ép instant: hàng có CSS scroll-behavior:smooth sẽ biến gán scrollLeft
-    // thành cuộn từ từ, box yếu bò mãi không tới.
-    const setInstantScrollLeft = (p: HTMLElement, target: number) => {
-      try {
-        const prev = p.style.scrollBehavior;
-        p.style.scrollBehavior = 'auto';
-        p.scrollLeft = target;
-        p.style.scrollBehavior = prev;
-      } catch {
-        try {
-          p.scrollLeft = target;
-        } catch {}
-      }
-    };
+    if (dy !== 0) smoothWindowScrollBy(dy);
+    // Ngang: căn giữa item trong MỌI tổ tiên cuộn được (thường chỉ có hàng phim)
     let p: HTMLElement | null = el.parentElement;
-    let firstScrollable: HTMLElement | null = null;
-    let firstTarget = 0;
     while (p && p !== document.body && p !== document.documentElement) {
       try {
         if (p.scrollWidth > p.clientWidth + 8) {
           const pr = p.getBoundingClientRect();
-          const target = Math.max(
-            0,
-            Math.round(p.scrollLeft + (r.left - pr.left) - (pr.width - r.width) / 2),
+          smoothRowScrollTo(
+            p,
+            Math.max(0, Math.round(p.scrollLeft + (r.left - pr.left) - (pr.width - r.width) / 2)),
           );
-          if (!firstScrollable) {
-            firstScrollable = p;
-            firstTarget = target;
-          }
-          setInstantScrollLeft(p, target);
         }
       } catch {}
       p = p.parentElement;
-    }
-    // Máy chậm layout chưa kịp: kiểm tra lại sau 1 frame, chưa tới thì đẩy tiếp.
-    if (firstScrollable) {
-      const fp = firstScrollable;
-      const ft = firstTarget;
-      const fel = el;
-      window.requestAnimationFrame(() => {
-        try {
-          if (Math.abs(fp.scrollLeft - ft) > 4) setInstantScrollLeft(fp, ft);
-          else {
-            const rr = fel.getBoundingClientRect();
-            const pr2 = fp.getBoundingClientRect();
-            if (rr.left < pr2.left - 4 || rr.right > pr2.right + 4) {
-              setInstantScrollLeft(
-                fp,
-                Math.max(0, Math.round(fp.scrollLeft + (rr.left - pr2.left) - (pr2.width - rr.width) / 2)),
-              );
-            }
-          }
-        } catch {}
-      });
     }
   } catch {}
 }
