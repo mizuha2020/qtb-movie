@@ -70,6 +70,35 @@ function center(r: DOMRect) {
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
+/** Cuộn trang + hàng ngang để focus luôn nhìn thấy (không dùng scrollIntoView:
+ *  block:'nearest' trên WebView TV lúc cuộn lúc không). Mỗi lần bấm = màn hình đi theo. */
+export function tvScrollIntoView(el: HTMLElement) {
+  try {
+    const r = el.getBoundingClientRect();
+    const vh = window.innerHeight || 800;
+    // Dọc: cuộn window, chừa chỗ navbar dính trên đầu
+    const topSafe = 140;
+    const bottomSafe = 60;
+    let dy = 0;
+    if (r.top < topSafe) dy = r.top - topSafe;
+    else if (r.bottom > vh - bottomSafe) dy = r.bottom - (vh - bottomSafe);
+    if (dy !== 0) window.scrollBy(0, Math.round(dy));
+    // Ngang: căn giữa item trong container cuộn gần nhất (hàng phim)
+    let p: HTMLElement | null = el.parentElement;
+    while (p && p !== document.body && p !== document.documentElement) {
+      try {
+        if (p.scrollWidth > p.clientWidth + 8) {
+          const pr = p.getBoundingClientRect();
+          const target = p.scrollLeft + (r.left - pr.left) - (pr.width - r.width) / 2;
+          p.scrollLeft = Math.max(0, Math.round(target));
+          break;
+        }
+      } catch {}
+      p = p.parentElement;
+    }
+  } catch {}
+}
+
 /** Di chuyển focus tới phần tử gần nhất theo hướng. Trả về true nếu đã chuyển. */
 export function focusNearest(dir: TvDirection): boolean {
   try {
@@ -120,10 +149,7 @@ export function focusNearest(dir: TvDirection): boolean {
       } catch {
         best.focus();
       }
-      try {
-        // Scroll instant (không smooth): box TV yếu, smooth gây khựng + trễ focus
-        best.scrollIntoView({ block: 'nearest', inline: 'center' });
-      } catch {}
+      tvScrollIntoView(best);
       return true;
     }
     return false;
@@ -142,9 +168,7 @@ export function ensureTvFocus(): boolean {
       const el = document.querySelector<HTMLElement>(sel);
       if (el && isVisible(el)) {
         el.focus({ preventScroll: true } as FocusOptions);
-        try {
-          el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-        } catch {}
+        tvScrollIntoView(el);
         return true;
       }
     }
@@ -238,9 +262,7 @@ export function handleTvKey(e: KeyboardEvent): boolean {
           } catch {
             next.focus();
           }
-          try {
-            next.scrollIntoView({ block: 'nearest', inline: 'center' });
-          } catch {}
+          tvScrollIntoView(next);
           return true;
         }
       } catch {}
