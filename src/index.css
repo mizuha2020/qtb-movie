@@ -252,7 +252,7 @@ html.tv-mode { font-size: 18px; }
 /* TV perf (fix lag): chip TV yếu nhất ở backdrop-blur + transition/hover + marquee chạy nền.
    Tắt hết trên tv-mode, desktop/phone giữ nguyên. */
 .tv-mode #qtb-navbar { background: #0b1329 !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
-.tv-mode .backdrop-blur-sm, .tv-mode .backdrop-blur, .tv-mode .backdrop-blur-md,
+.tv-mode .backdrop-blur-xs, .tv-mode .backdrop-blur-sm, .tv-mode .backdrop-blur, .tv-mode .backdrop-blur-md,
 .tv-mode .backdrop-blur-lg, .tv-mode .backdrop-blur-xl, .tv-mode .backdrop-blur-2xl {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
@@ -261,7 +261,7 @@ html.tv-mode { font-size: 18px; }
 .tv-mode #qtb-hero-banner, .tv-mode #qtb-hero-banner * { transition: none !important; }
 .tv-mode .group\/row, .tv-mode .group\/row * { transition-duration: 0.01ms !important; }
 .tv-mode .animate-cucumber-marquee { animation: none !important; }
-.tv-mode .animate-pulse { animation-duration: 2.5s !important; }
+.tv-mode .animate-pulse, .tv-mode .animate-ping, .tv-mode .animate-spin-slow { animation: none !important; }
 .tv-mode .tv-player-bottom .tv-seek-btn { display: flex !important; }
 .tv-mode [data-tv-card] { scroll-margin: 24px; border-radius: 12px; }
 /* Focus card kiểu Netflix: chỉ zoom (không viền), transition riêng transform cho mượt */

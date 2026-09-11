@@ -41,11 +41,13 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
 
   const resetInterval = useCallback(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
+    // TV box yếu: tắt auto-rotate hero (đỡ animate + đỡ fetch ảnh liên tục)
+    if (isTvHero) return;
     if (!heroMovies || heroMovies.length <= 1) return;
     intervalRef.current = setInterval(() => {
       setCurrentIndex((prev) => (prev + 1) % heroMovies.length);
     }, 9000);
-  }, [heroMovies]);
+  }, [heroMovies, isTvHero]);
 
   // Auto rotate featured hero movie every 9 seconds if not interacted
   useEffect(() => {
@@ -89,6 +91,8 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   // Pre-load next & prev slide images in memory for seamless zero-flicker transitions
   useEffect(() => {
     if (!heroMovies.length) return;
+    // TV box RAM yếu: bỏ preload slide kề + logo để đỡ spike network/RAM lúc mở app
+    if (isTvHero) return;
     const nextIdx = (currentIndex + 1) % heroMovies.length;
     const prevIdx = (currentIndex - 1 + heroMovies.length) % heroMovies.length;
     [nextIdx, prevIdx].forEach((idx) => {
@@ -282,7 +286,35 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
         }}
       />
 
-      {/* Background Image with Dynamic Fade Transitions */}
+      {/* Background Image with Dynamic Fade Transitions (TV: ảnh tĩnh, không animate) */}
+      {isTvHero ? (
+        <div className="absolute inset-0 w-full h-full">
+          {(() => {
+            const heroSrc = getHeroSrc(currentMovie);
+            const fallbackThumb = getImageUrl(currentMovie.thumb_url || currentMovie.poster_url, (currentMovie as any).source);
+            return (
+              <img
+                src={heroSrc || fallbackThumb}
+                alt={currentMovie.name}
+                loading="eager"
+                decoding="async"
+                fetchPriority="high"
+                className="w-full h-full object-cover object-center sm:object-top"
+                onError={(e) => {
+                  const img = e.target as HTMLImageElement;
+                  if (fallbackThumb && img.src !== fallbackThumb) {
+                    img.src = fallbackThumb;
+                    return;
+                  }
+                  if (img.src !== 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=1200&auto=format&fit=crop&q=80') {
+                    img.src = 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=1200&auto=format&fit=crop&q=80';
+                  }
+                }}
+              />
+            );
+          })()}
+        </div>
+      ) : (
       <AnimatePresence mode="wait">
         <motion.div
           key={currentMovie.slug || currentIndex}
@@ -318,6 +350,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
           })()}
         </motion.div>
       </AnimatePresence>
+      )}
 
       {/* Light scrim for text readability - much lighter than before (was 80%/60%) */}
       {/* Only covers text area (left + bottom), right/top stays fully clear */}
@@ -468,6 +501,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
                 key={idx}
                 type="button"
                 data-dot="true"
+                data-tv-skip
                 onClick={() => { setCurrentIndex(idx); resetInterval(); }}
                 className="hero-dot no-tv-min-h group relative flex items-center justify-center py-2 px-0.5 cursor-pointer bg-transparent border-0 outline-none !min-h-0 !h-auto transition-transform hover:scale-110 active:scale-95 shrink-0"
                 aria-label={`Chuyển đến phim ${idx + 1}`}
@@ -512,12 +546,13 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
         {heroMovies.map((_, idx) => {
           const isActive = idx === currentIndex;
           return (
-            <button
-              key={idx}
-              type="button"
-              data-dot="true"
-              onClick={() => { setCurrentIndex(idx); resetInterval(); }}
-              className="hero-dot no-tv-min-h group relative flex items-center justify-center py-1 px-0.5 cursor-pointer bg-transparent border-0 outline-none !min-h-0 !h-auto shrink-0"
+              <button
+                key={idx}
+                type="button"
+                data-dot="true"
+                data-tv-skip
+                onClick={() => { setCurrentIndex(idx); resetInterval(); }}
+                className="hero-dot no-tv-min-h group relative flex items-center justify-center py-1 px-0.5 cursor-pointer bg-transparent border-0 outline-none !min-h-0 !h-auto shrink-0"
               aria-label={`Chuyển đến phim ${idx + 1}`}
               aria-current={isActive ? 'true' : undefined}
             >

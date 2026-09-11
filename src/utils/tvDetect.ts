@@ -3,7 +3,7 @@
 // (báo hover được / cắm chuột) bị rớt khỏi tv-mode.
 
 const TV_UA_RE =
-  /googletv|smarttv|smart-tv|appletv|appletv\+|hbbtv|pov_tv|netcast|web0s|tizen|roku|viera|bravia|aftt|aftm|firetv|leanback|ouya|nvidia shield|mi tv|mitv|android tv/i;
+  /googletv|smarttv|smart-tv|smartcast|appletv|appletv\+|hbbtv|pov_tv|netcast|web0s|tizen|roku|viera|bravia|aftt|aftm|aftb|firetv|leanback|ouya|nvidia shield|mi tv|mitv|android tv|vidaa|crkey|opera tv|opera-tv|shieldtv|tv box/i;
 
 const TV_FORCE_KEY = 'gau_tv_mode'; // localStorage: '1' | '0'
 
@@ -47,15 +47,18 @@ export function isTvDevice(): boolean {
     if (TV_UA_RE.test(navigator.userAgent)) return true;
   } catch {}
 
-  // 3. Heuristic màn hình lớn + không hover + pointer thô.
-  // Không gate cứng theo hover nữa: UA đã return ở trên, ở đây chỉ tránh
-  // false-positive desktop có chuột.
+  // 3. Heuristic cho Android box UA trơn (Xiaomi Stick/Mecool chỉ báo
+  // Chrome Linux/Android, không có chữ "tv") + TV cắm chuột/air-mouse.
   try {
     const w = window.innerWidth || 0;
     const canHover = window.matchMedia('(hover: hover)').matches;
     const coarse = window.matchMedia('(pointer: coarse)').matches;
+    const fine = window.matchMedia('(pointer: fine)').matches;
     if (w >= 1920 && !canHover) return true;
     if (w >= 1280 && !canHover && coarse) return true;
+    // Box UA trơn: màn hình lớn + pointer thô + KHÔNG có pointer fine
+    // (kể cả khi báo hover được do cắm chuột, thiếu fine vẫn coi là TV).
+    if (w >= 1024 && coarse && !fine) return true;
   } catch {}
   return false;
 }

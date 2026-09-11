@@ -432,6 +432,7 @@ export const MovieRow: React.FC<MovieRowProps> = ({
         <div className="relative -mx-2 px-2">
           <div
             ref={containerRef}
+            data-tv-row
             onScroll={checkScrollBounds}
             onMouseDown={onMobileMouseDown}
             onMouseMove={onMobileMouseMove}

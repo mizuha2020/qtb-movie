@@ -178,6 +178,13 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   const prevRateRef = useRef(1);
   const showControlsRef = useRef(true);
   showControlsRef.current = showControls;
+  // Refs đồng bộ để handler keydown (đăng ký 1 lần) không đọc state stale
+  const showSettingsRef = useRef(false);
+  showSettingsRef.current = showSettings;
+  const showServerMenuRef = useRef(false);
+  showServerMenuRef.current = showServerMenu;
+  const showEpisodesRef = useRef(false);
+  showEpisodesRef.current = showEpisodes;
   const isTouchDeviceRef = useRef(false);
   isTouchDeviceRef.current = isTouchDevice;
   // intro/recap/outro segments (single fetch per episode, no cache)
@@ -206,6 +213,13 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   const lastPreviewTarget = useRef(-1);
   const [previewImg, setPreviewImg] = useState<string | null>(null);
   const [previewVisible, setPreviewVisible] = useState(false);
+  // TV remote: nhớ nút đã mở menu để đóng menu trả focus về đúng chỗ (Netflix-style)
+  const menuOpenerRef = useRef<HTMLButtonElement | null>(null);
+  const episodeBtnRef = useRef<HTMLButtonElement | null>(null);
+  const serverBtnRef = useRef<HTMLButtonElement | null>(null);
+  const settingsBtnRef = useRef<HTMLButtonElement | null>(null);
+  // TV remote: tua lũy tiến khi bấm dồn Trái/Phải (10s -> 30s -> 60s)
+  const lastSeekRef = useRef<{ time: number; dir: 1 | -1; count: number }>({ time: 0, dir: 1, count: 0 });
 
   const episodeIndex = useMemo(() => {
     return currentServer.server_data.findIndex(e => e.slug === currentEpisode.slug);
@@ -387,7 +401,20 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     if (hideControlsTimer.current) window.clearTimeout(hideControlsTimer.current);
     if (!showControlsRef.current) return;
     hideControlsTimer.current = window.setTimeout(() => {
-      if (!showSettings && !showServerMenu && !showEpisodes && !isDraggingRef.current) setShowControls(false);
+      if (!showSettings && !showServerMenu && !showEpisodes && !isDraggingRef.current) {
+        setShowControls(false);
+        // TV: giống resetControlsTimer — dời focus khỏi nút sắp ẩn về khung player
+        // để remote bấm tiếp không "mất hút" + WebView không vẽ viền vàng lên nút ẩn.
+        try {
+          if (document.documentElement.classList.contains('tv-mode')) {
+            const root = containerRef.current;
+            const a = document.activeElement as HTMLElement | null;
+            if (root && a && a !== root && root.contains(a)) {
+              root.focus({ preventScroll: true } as FocusOptions);
+            }
+          }
+        } catch {}
+      }
     }, 5000);
   }, [showSettings, showServerMenu, showEpisodes]);
 
@@ -1135,6 +1162,46 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     return () => window.clearTimeout(t);
   }, [isTv]);
 
+  // TV remote: mở menu tập/server/cài đặt là focus ngay item đầu/current
+  // để D-pad đi được trong menu; đóng menu (bằng chuột) trả focus về nút mở.
+  useEffect(() => {
+    try {
+      if (!document.documentElement.classList.contains('tv-mode')) return;
+    } catch { return; }
+    const opened = showEpisodes || showServerMenu || showSettings;
+    if (!opened) {
+      if (menuOpenerRef.current) {
+        try {
+          const opener = menuOpenerRef.current;
+          const a = document.activeElement as HTMLElement | null;
+          // Chỉ trả focus khi focus đang kẹt trong panel vừa đóng
+          if (a && a.closest?.('.player-menu-panel')) opener.focus();
+        } catch {}
+        menuOpenerRef.current = null;
+      }
+      return;
+    }
+    const t = window.setTimeout(() => {
+      try {
+        const root = containerRef.current;
+        if (!root) return;
+        const panels = Array.from(root.querySelectorAll<HTMLElement>('.player-menu-panel'));
+        const panel = panels[panels.length - 1];
+        if (!panel) return;
+        // Ưu tiên item hiện tại (tập đang xem / server đang dùng), không thì nút đầu
+        const target =
+          panel.querySelector<HTMLElement>('.bg-blue-500') ||
+          panel.querySelector<HTMLElement>('button, input');
+        try {
+          target?.focus({ preventScroll: true } as FocusOptions);
+        } catch {
+          target?.focus();
+        }
+      } catch {}
+    }, 80);
+    return () => window.clearTimeout(t);
+  }, [showEpisodes, showServerMenu, showSettings]);
+
   // APK: đồng bộ trạng thái phát để bấm Home tự vào PiP (native auto-enter)
   useEffect(() => {
     if (!isNativeAndroid()) return;
@@ -1262,10 +1329,25 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       const tv = isTvModeActive();
       const k = e.key;
       const kc = (e as any).keyCode;
-      // Nút Back của remote TV (browser): Escape / GoBack / Tizen 10009 / LG 461.
-      // 2 nấc kiểu Netflix: overlay ẩn -> Back chỉ mở overlay; overlay hiện -> Back thoát về chi tiết.
-      if (tv && (k === 'GoBack' || k === 'BrowserBack' || kc === 10009 || kc === 461)) {
+      // Nút Back của remote TV: Escape (Android TV/box hay gửi) / GoBack /
+      // BrowserBack / Tizen 10009 / LG 461.
+      // Thứ tự kiểu Netflix: menu đang mở -> đóng menu trước; overlay ẩn ->
+      // Back chỉ mở overlay; overlay hiện -> Back thoát về chi tiết.
+      if (tv && (k === 'Escape' || k === 'GoBack' || k === 'BrowserBack' || kc === 10009 || kc === 461)) {
         e.preventDefault();
+        if (showSettingsRef.current || showServerMenuRef.current || showEpisodesRef.current) {
+          setShowEpisodes(false);
+          setShowServerMenu(false);
+          setShowSettings(false);
+          resetControlsTimer();
+          window.setTimeout(() => {
+            try {
+              (menuOpenerRef.current || containerRef.current?.querySelector<HTMLButtonElement>('[data-tv-play]'))?.focus();
+            } catch {}
+            menuOpenerRef.current = null;
+          }, 60);
+          return;
+        }
         if (!showControlsRef.current) {
           resetControlsTimer();
           window.setTimeout(() => {
@@ -1294,16 +1376,30 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             } catch {}
           }, 150); // box TV chậm, 60ms đôi khi chưa render xong
         };
-        // Spec Netflix: ←/→ LUÔN tua ±10s (kể cả khi overlay hiện) + hiện overlay.
+        // TV remote trên slider (âm lượng/độ sáng): để browser chỉnh native,
+        // không hijack thành seek.
         if (k === 'ArrowLeft' || k === 'ArrowRight') {
+          const ae = document.activeElement as HTMLElement | null;
+          if (ae && ae.tagName === 'INPUT' && (ae as HTMLInputElement).type === 'range') {
+            resetControlsTimer();
+            return; // browser tự thay đổi value + phát change event
+          }
+          // Spec Netflix: ←/→ tua (kể cả khi overlay hiện) + hiện overlay.
+          // Bấm dồn cùng chiều trong 1.2s: tua lũy tiến 10s -> 30s -> 60s.
           e.preventDefault();
-          skip(k === 'ArrowLeft' ? -10 : 10);
+          const dir: 1 | -1 = k === 'ArrowLeft' ? -1 : 1;
+          const now = Date.now();
+          const prev = lastSeekRef.current;
+          const chain = prev.dir === dir && now - prev.time < 1200 ? prev.count + 1 : 1;
+          const step = chain <= 2 ? 10 : chain <= 4 ? 30 : 60;
+          lastSeekRef.current = { time: now, dir, count: chain };
+          skip(dir * step);
           if (hidden) wakeControls();
           else resetControlsTimer();
           try {
-            showGestureToast(k === 'ArrowLeft' ? 'Tua lại 10 giây' : 'Tua tới 10 giây');
+            showGestureToast(dir < 0 ? `Tua lại ${step} giây` : `Tua tới ${step} giây`);
           } catch {}
-          flashSeek(k === 'ArrowLeft' ? -10 : 10);
+          flashSeek(dir < 0 ? -10 : 10);
           return;
         }
         // ↑/↓: ẩn -> hiện overlay; hiện -> đi vào / di chuyển trong cụm tùy chọn.
@@ -1408,8 +1504,13 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         <video ref={previewVideoRef} muted playsInline preload="metadata" crossOrigin="anonymous" className="pointer-events-none absolute left-0 top-0 h-[2px] w-[2px] opacity-0" tabIndex={-1} aria-hidden />
         <canvas ref={previewCanvasRef} className="hidden w-0 h-0 pointer-events-none" />
         {isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40 pointer-events-none">
             <div className="w-12 h-12 sm:w-10 sm:h-10 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
+            {duration > 0 && (
+              <span className="text-xs font-bold text-white/80 tabular-nums bg-black/60 px-2.5 py-1 rounded-full">
+                Đã đệm {Math.min(100, Math.round((buffered / duration) * 100))}%
+              </span>
+            )}
           </div>
         )}
         {/* Double-tap seek flash zones (mobile) - không dùng key để tránh trùng key với toast */}
@@ -1740,7 +1841,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                 {/* Episode list - bottom-sheet trên mobile, popup trên desktop */}
                 {currentServer.server_data.length > 1 && (
                   <div className="relative">
-                    <button onClick={() => { setShowEpisodes(!showEpisodes); setShowServerMenu(false); setShowSettings(false); }} aria-label="Danh sách tập" className="player-menu-btn rounded-full sm:rounded-lg bg-transparent active:bg-white/20 hover:bg-white/10 border border-transparent hover:border-white/10 text-white flex items-center justify-center sm:justify-start gap-1.5 transition-colors w-11 h-11 sm:w-auto sm:h-8 sm:px-2.5" style={{ touchAction: 'manipulation' }} title="Danh sách tập"><List className="w-5 h-5 sm:w-3.5 sm:h-3.5 shrink-0" /> <span className="hidden sm:inline text-xs truncate">Danh sách tập</span></button>
+                    <button ref={episodeBtnRef} onClick={(e) => { if (!showEpisodes) menuOpenerRef.current = e.currentTarget; setShowEpisodes(!showEpisodes); setShowServerMenu(false); setShowSettings(false); }} aria-label="Danh sách tập" className="player-menu-btn rounded-full sm:rounded-lg bg-transparent active:bg-white/20 hover:bg-white/10 border border-transparent hover:border-white/10 text-white flex items-center justify-center sm:justify-start gap-1.5 transition-colors w-11 h-11 sm:w-auto sm:h-8 sm:px-2.5" style={{ touchAction: 'manipulation' }} title="Danh sách tập"><List className="w-5 h-5 sm:w-3.5 sm:h-3.5 shrink-0" /> <span className="hidden sm:inline text-xs truncate">Danh sách tập</span></button>
                     {showEpisodes && (
                       <>
                         {/* Backdrop mobile */}
@@ -1763,13 +1864,13 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                 )}
                 {/* Server */}
                 <div className="relative">
-                  <button onClick={() => { setShowServerMenu(!showServerMenu); setShowSettings(false); setShowEpisodes(false); }} aria-label="Âm thanh & Phụ đề" title="Âm thanh & Phụ đề" className="player-menu-btn rounded-full sm:rounded-lg bg-transparent active:bg-white/20 hover:bg-white/10 border border-transparent hover:border-white/10 text-white flex items-center justify-center sm:justify-start gap-1.5 transition-colors w-11 h-11 sm:w-auto sm:h-8 sm:px-2.5" style={{ touchAction: 'manipulation' }}><Server className="w-5 h-5 sm:w-3 sm:h-3 shrink-0" /> <span className="hidden sm:inline text-xs truncate">Âm thanh & Phụ đề</span></button>
+                  <button ref={serverBtnRef} onClick={(e) => { if (!showServerMenu) menuOpenerRef.current = e.currentTarget; setShowServerMenu(!showServerMenu); setShowSettings(false); setShowEpisodes(false); }} aria-label="Máy chủ" title="Máy chủ" className="player-menu-btn rounded-full sm:rounded-lg bg-transparent active:bg-white/20 hover:bg-white/10 border border-transparent hover:border-white/10 text-white flex items-center justify-center sm:justify-start gap-1.5 transition-colors w-11 h-11 sm:w-auto sm:h-8 sm:px-2.5" style={{ touchAction: 'manipulation' }}><Server className="w-5 h-5 sm:w-3 sm:h-3 shrink-0" /> <span className="hidden sm:inline text-xs truncate">Máy chủ</span></button>
                   {showServerMenu && (
                     <>
                       <div className="sm:hidden fixed inset-0 z-40 bg-black/60" onClick={() => setShowServerMenu(false)} onTouchEnd={() => setShowServerMenu(false)} />
                       <div className="player-menu-panel z-50 bg-[#1c1c1e] border border-white/10 shadow-2xl fixed inset-x-0 bottom-0 rounded-t-2xl p-4 pb-[max(20px,env(safe-area-inset-bottom,0px))] max-h-[60vh] overflow-auto sm:absolute sm:inset-x-auto sm:right-0 sm:bottom-10 sm:rounded-xl sm:p-2 sm:w-48 sm:max-h-60 sm:pb-2">
                         <div className="sm:hidden w-10 h-1 rounded-full bg-white/20 mx-auto mb-3" />
-                        <p className="text-[11px] font-bold text-white/50 uppercase mb-2 px-1">Âm thanh & Phụ đề</p>
+                        <p className="text-[11px] font-bold text-white/50 uppercase mb-2 px-1">Máy chủ</p>
                         {allServers.map(s => (
                           <button key={s.server_name} onClick={() => { const ep = s.server_data.find(e => e.slug === currentEpisode.slug) || s.server_data[0]; if (ep) onSelectEpisode(ep, s, videoRef.current?.currentTime); setShowServerMenu(false); }} className={`w-full text-left px-3 py-3 sm:py-2 rounded-xl sm:rounded-lg text-sm sm:text-xs mb-1 active:scale-[0.98] transition ${s.server_name===currentServer.server_name ? 'bg-blue-500 text-white' : 'text-white/80 bg-white/5 sm:bg-transparent active:bg-white/15'}`}>{s.server_name}</button>
                         ))}
@@ -1779,7 +1880,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                   )}
                 </div>
                 <div className="relative">
-                  <button onClick={() => { setShowSettings(!showSettings); setShowServerMenu(false); setShowEpisodes(false); }} aria-label="Cài đặt" className="player-menu-btn rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center text-white w-11 h-11 sm:w-8 sm:h-8" style={{ touchAction: 'manipulation' }}><Settings className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" /></button>
+                  <button ref={settingsBtnRef} onClick={(e) => { if (!showSettings) menuOpenerRef.current = e.currentTarget; setShowSettings(!showSettings); setShowServerMenu(false); setShowEpisodes(false); }} aria-label="Cài đặt" className="player-menu-btn rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center text-white w-11 h-11 sm:w-8 sm:h-8" style={{ touchAction: 'manipulation' }}><Settings className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" /></button>
                   {showSettings && (
                     <>
                       <div className="sm:hidden fixed inset-0 z-40 bg-black/60" onClick={() => setShowSettings(false)} onTouchEnd={() => setShowSettings(false)} />

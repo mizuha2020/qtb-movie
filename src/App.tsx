@@ -1230,6 +1230,8 @@ export default function App() {
           }
           if (showExitConfirmModal) {
             setShowExitConfirmModal(false);
+          } else if (showLogoutConfirm) {
+            setShowLogoutConfirm(false);
           } else if (playingMovie || selectedMovieForDetail) {
             // Player/detail đóng theo URL thật (deep-link được) thay vì history.back() mù
             if (playingMovie) {
@@ -1272,6 +1274,7 @@ export default function App() {
     };
   }, [
     showExitConfirmModal,
+    showLogoutConfirm,
     playingMovie,
     selectedMovieForDetail,
     showAdminDashboard,

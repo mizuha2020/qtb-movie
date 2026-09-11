@@ -24,12 +24,30 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
   onConfirm,
   showCancel = false,
 }) => {
+  const confirmBtnRef = React.useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (isOpen) {
       document.body.style.overflow = 'hidden';
+      // TV remote/màn hình: popup mở là focus ngay nút chính để D-pad/OK chọn được
+      const t = window.setTimeout(() => {
+        try {
+          confirmBtnRef.current?.focus({ preventScroll: true } as FocusOptions);
+        } catch {
+          confirmBtnRef.current?.focus();
+        }
+      }, 80);
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') onClose();
+      };
+      window.addEventListener('keydown', onKey);
+      return () => {
+        document.body.style.overflow = '';
+        window.clearTimeout(t);
+        window.removeEventListener('keydown', onKey);
+      };
     }
     return () => { document.body.style.overflow = ''; };
-  }, [isOpen]);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -50,7 +68,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 animate-in fade-in duration-150">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-[#0f172a] rounded-2xl shadow-2xl border border-slate-700/50 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-150">
+      <div role="dialog" aria-modal="true" className="relative bg-[#0f172a] rounded-2xl shadow-2xl border border-slate-700/50 w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-150">
         <div className="flex items-center justify-between p-5 border-b border-slate-700/50">
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center bg-${type === 'error' ? 'red' : type === 'success' ? 'emerald' : type === 'warning' ? 'amber' : 'sky'}-600/20`}>
@@ -77,6 +95,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
             </button>
           )}
           <button
+            ref={confirmBtnRef}
             onClick={() => { onConfirm?.(); onClose(); }}
             className={`px-4 py-2 rounded-xl font-medium text-sm transition-colors ${
               type === 'error' || type === 'warning'
@@ -115,10 +134,30 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   cancelText = 'Hủy',
   type = 'danger',
 }) => {
+  // Mặc định focus nút "Ở lại" (an toàn): tránh remote bấm OK nhầm thành Thoát/Đăng xuất
+  const cancelBtnRef = React.useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
-    if (isOpen) document.body.style.overflow = 'hidden';
+    if (isOpen) {
+      document.body.style.overflow = 'hidden';
+      const t = window.setTimeout(() => {
+        try {
+          cancelBtnRef.current?.focus({ preventScroll: true } as FocusOptions);
+        } catch {
+          cancelBtnRef.current?.focus();
+        }
+      }, 80);
+      const onKey = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') onClose();
+      };
+      window.addEventListener('keydown', onKey);
+      return () => {
+        document.body.style.overflow = '';
+        window.clearTimeout(t);
+        window.removeEventListener('keydown', onKey);
+      };
+    }
     return () => { document.body.style.overflow = ''; };
-  }, [isOpen]);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -131,13 +170,14 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 animate-in fade-in duration-150">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative bg-[#0f172a] rounded-2xl shadow-2xl border border-slate-700/50 w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-150">
+      <div role="dialog" aria-modal="true" className="relative bg-[#0f172a] rounded-2xl shadow-2xl border border-slate-700/50 w-full max-w-sm overflow-hidden animate-in zoom-in-95 duration-150">
         <div className="p-5 text-center space-y-3">
           <h3 className="text-lg font-bold text-white">{title}</h3>
           <p className="text-sm text-slate-400">{message}</p>
         </div>
         <div className="flex border-t border-slate-700/50">
           <button
+            ref={cancelBtnRef}
             onClick={onClose}
             className="flex-1 py-3 text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700/30 transition-colors"
           >

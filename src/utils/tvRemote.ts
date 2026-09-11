@@ -57,8 +57,18 @@ function isVisible(el: HTMLElement): boolean {
 
 export function getFocusable(): HTMLElement[] {
   try {
+    let tvMode = false;
+    try {
+      tvMode = document.documentElement.classList.contains('tv-mode');
+    } catch {}
     return Array.from(document.querySelectorAll<HTMLElement>(FOCUSABLE_SEL)).filter(
-      (el) => !el.hasAttribute('data-tv-skip') && isVisible(el),
+      (el) => {
+        if (el.hasAttribute('data-tv-skip')) return false;
+        // TV không dùng bottom-nav mobile: loại hẳn khỏi pool D-pad
+        // (viewport TV 720p <768px khiến dock hiện dù đang tv-mode).
+        if (tvMode && (el.closest?.('#mobile-bottom-nav') as Element | null)) return false;
+        return isVisible(el);
+      },
     );
   } catch {
     return [];
@@ -171,6 +181,143 @@ export function tvScrollIntoView(el: HTMLElement) {
   } catch {}
 }
 
+/**
+ * Điều hướng dọc giữa các hàng phim (Netflix-style):
+ * đang đứng trên card mà bấm lên/xuống -> nhảy tới card ở hàng phim
+ * gần nhất phía trên/dưới, KHÔNG rớt vào navbar chỉ vì navbar thẳng cột.
+ * Trả về true nếu đã chuyển focus.
+ */
+function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean {
+  try {
+    const cr = active.getBoundingClientRect();
+    if (!cr || cr.width <= 4 || cr.height <= 4) return false;
+    const cx = cr.left + cr.width / 2;
+    let cards: HTMLElement[];
+    try {
+      cards = Array.from(
+        document.querySelectorAll<HTMLElement>('[data-tv-card]'),
+      ).filter((el) => el !== active && isVisible(el));
+    } catch {
+      return false;
+    }
+    if (!cards.length) return false;
+    type Cand = { el: HTMLElement; r: DOMRect; edge: number };
+    const cands: Cand[] = [];
+    for (const el of cards) {
+      let r: DOMRect;
+      try {
+        r = el.getBoundingClientRect();
+      } catch {
+        continue;
+      }
+      if (!r || r.width <= 4 || r.height <= 4) continue;
+      if (dir === 'up') {
+        // Card phải nằm hẳn phía trên (trừ hao 4px lệch layout)
+        if (r.bottom > cr.top - 4) continue;
+        cands.push({ el, r, edge: r.bottom });
+      } else {
+        if (r.top < cr.bottom + 4) continue;
+        cands.push({ el, r, edge: r.top });
+      }
+    }
+    if (!cands.length) return false;
+    // Hàng gần nhất: bottom lớn nhất (up) / top nhỏ nhất (down).
+    // Gom các card cùng dải hàng (dung sai 100px do card cao ~300px).
+    const ROW_BAND = 100;
+    const rowEdge =
+      dir === 'up'
+        ? Math.max(...cands.map((c) => c.edge))
+        : Math.min(...cands.map((c) => c.edge));
+    const row = cands.filter((c) => Math.abs(c.edge - rowEdge) <= ROW_BAND);
+    if (!row.length) return false;
+    // Trong cùng hàng: chọn card gần nhất theo trục X (cùng cột),
+    // rớt第二位 mới xét khoảng cách dọc để ổn định.
+    let best: Cand | null = null;
+    let bestScore = Infinity;
+    for (const c of row) {
+      const px = c.r.left + c.r.width / 2;
+      const dx = Math.abs(px - cx);
+      const dy =
+        dir === 'up' ? cr.top - c.edge : c.edge - cr.bottom;
+      const score = dx + Math.max(0, dy) * 0.15;
+      if (score < bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+    if (!best) return false;
+    try {
+      best.el.focus({ preventScroll: true } as FocusOptions);
+    } catch {
+      best.el.focus();
+    }
+    tvScrollIntoView(best.el);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Bước trung gian khi bấm lên từ hàng phim đầu tiên (hết card phía trên):
+ * ưu tiên mọi nút trung gian (hero / carousel giữa navbar và hàng phim)
+ * trước khi cho rớt về navbar. Trả về true nếu đã chuyển.
+ */
+function focusIntermediateAbove(active: HTMLElement): boolean {
+  try {
+    const cr = active.getBoundingClientRect();
+    if (!cr || cr.width <= 4 || cr.height <= 4) return false;
+    const cx = cr.left + cr.width / 2;
+    let pool: HTMLElement[];
+    try {
+      pool = getFocusable().filter(
+        (el) =>
+          el !== active &&
+          !(el.closest?.('#qtb-navbar') as Element | null) &&
+          !(el.closest?.('#mobile-bottom-nav') as Element | null),
+      );
+    } catch {
+      return false;
+    }
+    if (!pool.length) return false;
+    let best: HTMLElement | null = null;
+    let bestRect: DOMRect | null = null;
+    let bestScore = Infinity;
+    for (const el of pool) {
+      let r: DOMRect;
+      try {
+        r = el.getBoundingClientRect();
+      } catch {
+        continue;
+      }
+      if (!r || r.width <= 4 || r.height <= 4) continue;
+      // Phải nằm hẳn phía trên anchor
+      if (r.bottom > cr.top - 4) continue;
+      const px = r.left + r.width / 2;
+      const dx = Math.abs(px - cx);
+      const dy = cr.top - r.bottom;
+      // Ưu tiên gần theo chiều dọc, lệch cột ít bị phạt hơn generic (0.8 vs 2.2)
+      const score = dy + dx * 0.8;
+      if (score < bestScore) {
+        bestScore = score;
+        best = el;
+        bestRect = r;
+      }
+    }
+    if (!best) return false;
+    try {
+      best.focus({ preventScroll: true } as FocusOptions);
+    } catch {
+      best.focus();
+    }
+    tvScrollIntoView(best);
+    void bestRect;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Di chuyển focus tới phần tử gần nhất theo hướng. Trả về true nếu đã chuyển. */
 export function focusNearest(dir: TvDirection): boolean {
   try {
@@ -180,6 +327,66 @@ export function focusNearest(dir: TvDirection): boolean {
     if (!active || active === document.body) {
       ensureTvFocus();
       return true;
+    }
+    // Đang đứng trong dialog/modal: bẫy focus trong cùng dialog,
+    // không cho D-pad xuyên ra nền.
+    try {
+      const dlg = active.closest?.('[role="dialog"]') as HTMLElement | null;
+      if (dlg) {
+        const poolIn = pool.filter((el) => dlg.contains(el));
+        if (poolIn.length) {
+          const cr0 = active.getBoundingClientRect();
+          const c0 = center(cr0);
+          let bestD: HTMLElement | null = null;
+          let bestScoreD = Infinity;
+          for (const el of poolIn) {
+            if (el === active) continue;
+            const r = el.getBoundingClientRect();
+            const p = center(r);
+            const dx = p.x - c0.x;
+            const dy = p.y - c0.y;
+            if (dir === 'left' && dx >= -8) continue;
+            if (dir === 'right' && dx <= 8) continue;
+            if (dir === 'up' && dy >= -8) continue;
+            if (dir === 'down' && dy <= 8) continue;
+            const score = Math.abs(dir === 'left' || dir === 'right' ? dx : dy) +
+              Math.abs(dir === 'left' || dir === 'right' ? dy : dx) * 2.2;
+            if (score < bestScoreD) {
+              bestScoreD = score;
+              bestD = el;
+            }
+          }
+          if (bestD) {
+            try {
+              bestD.focus({ preventScroll: true } as FocusOptions);
+            } catch {
+              bestD.focus();
+            }
+            return true;
+          }
+          return true; // hết hướng trong dialog -> nuốt phím, không xuyên nền
+        }
+      }
+    } catch {}
+    // Đang đứng trên card phim (hoặc nút </> trong hàng) mà đi dọc ->
+    // ưu tiên hàng phim trên/dưới trước khi xét navbar/hero
+    // (tránh bấm lên từ giữa/cuối trang rớt vào navbar).
+    if (dir === 'up' || dir === 'down') {
+      let inRow = !!active.hasAttribute?.('data-tv-card');
+      if (!inRow) {
+        try {
+          inRow = !!active.closest?.('[class*="group/row"]');
+        } catch {
+          inRow = false;
+        }
+      }
+      if (inRow) {
+        if (focusCardRowVertical(active, dir)) return true;
+        // Hết card phía trên (đang ở hàng đầu): bấm lên phải ghé hero/
+        // carousel trung gian trước, chỉ khi không còn gì mới về navbar.
+        if (dir === 'up' && focusIntermediateAbove(active)) return true;
+        // Hết hàng phía dưới thì fallback generic bình thường.
+      }
     }
     const cr = active.getBoundingClientRect();
     const c = center(cr);
@@ -320,7 +527,11 @@ export function handleTvKey(e: KeyboardEvent): boolean {
     const active = document.activeElement as HTMLElement | null;
     if (active?.hasAttribute?.('data-tv-card') && (dir === 'left' || dir === 'right')) {
       try {
-        const row = active.parentElement?.parentElement as HTMLElement | null;
+        // Ưu tiên container đánh dấu data-tv-row (đúng với cả Top10 lồng sâu),
+        // rớt lại parent.parent cho MovieRow cũ.
+        const row =
+          (active.closest?.('[data-tv-row]') as HTMLElement | null) ??
+          (active.parentElement?.parentElement as HTMLElement | null);
         const cards = row
           ? (Array.from(row.querySelectorAll('[data-tv-card]')) as HTMLElement[]).filter(
               (c) => c.offsetParent !== null || c.getClientRects().length > 0,

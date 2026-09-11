@@ -400,6 +400,7 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
         <div className="relative group">
           <div
             ref={rowRef}
+            data-tv-row
             onScroll={checkScrollBounds}
             onMouseDown={onMobileMouseDown}
             onMouseMove={onMobileMouseMove}
@@ -440,7 +441,7 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
                     src={getImageUrl(movie.poster_url || movie.thumb_url)}
                     alt={movie.name}
                     className="w-full h-full object-cover pointer-events-none"
-                    loading="eager"
+                    loading={isTv ? "lazy" : "eager"}
                     decoding="async"
                     onError={(e) => {
                       const target = e.currentTarget as HTMLImageElement;
@@ -550,7 +551,7 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
                       src={getImageUrl(movie.poster_url || movie.thumb_url)}
                       alt={movie.name}
                       className="w-full h-full object-cover pointer-events-none"
-                      loading="eager"
+                      loading={isTv ? "lazy" : "eager"}
                       decoding="async"
                       onError={(e) => {
                         const target = e.currentTarget as HTMLImageElement;
