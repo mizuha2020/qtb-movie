@@ -26,6 +26,9 @@ import {
   HardDrive,
 } from 'lucide-react';
 import { Capacitor } from '@capacitor/core';
+import { useTvMode } from '../hooks/useTvMode';
+import { setTvModeOverride } from '../utils/tvDetect';
+import { ensureTvFocus } from '../utils/tvRemote';
 import { movieApi, getImageUrl, API_SOURCES } from '../services/movieApi';
 import { getFullApiUrl } from '../services/apiConfig';
 import { Movie } from '../types';
@@ -97,6 +100,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   const [appConfig, setAppConfig] = useState<Record<string, { enabled: boolean }>>({});
 
   const isNativeApp = (() => { try { return Capacitor.isNativePlatform(); } catch { return false; } })();
+  const isTvMode = useTvMode();
 
   useEffect(() => {
     const unsub = appConfigService.subscribe((cfg) => setAppConfig(cfg));
@@ -827,6 +831,24 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <span>Ghép đôi TV (nhập mã)</span>
                     </button>
                   )}
+
+                  <button
+                    id="nav-tv-mode-toggle-btn"
+                    onClick={() => {
+                      setTvModeOverride(!isTvMode);
+                      setIsProfileMenuOpen(false);
+                      if (!isTvMode) {
+                        window.setTimeout(() => { try { ensureTvFocus(); } catch {} }, 150);
+                      }
+                    }}
+                    className="w-full flex items-center gap-2.5 p-2 rounded-xl text-sm text-slate-300 hover:bg-slate-800 hover:text-white transition-colors cursor-pointer"
+                  >
+                    <Tv className={`w-4 h-4 ${isTvMode ? 'text-emerald-400' : 'text-slate-400'}`} />
+                    <span>Chế độ TV</span>
+                    <span className={`ml-auto text-[10px] font-bold px-2 py-0.5 rounded-full border ${isTvMode ? 'text-emerald-300 bg-emerald-950 border-emerald-800/80' : 'text-slate-400 bg-slate-800 border-slate-700'}`}>
+                      {isTvMode ? 'BẬT' : 'TẮT'}
+                    </span>
+                  </button>
 
                   {onLogout && (
                     <button

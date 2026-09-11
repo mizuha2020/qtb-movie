@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { isTvDevice, applyTvClass } from '../utils/tvDetect';
+import { isTvDevice, applyTvClass, TV_MODE_EVENT } from '../utils/tvDetect';
 
 export function useTvMode(): boolean {
   const [isTv, setIsTv] = useState<boolean>(() => {
@@ -14,6 +14,10 @@ export function useTvMode(): boolean {
     window.addEventListener('orientationchange', sync);
     // Khi đổi ?tv= / localStorage ở tab khác thì sync lại
     window.addEventListener('popstate', sync);
+    // Khi bật/tắt công tắc chế độ TV trong app
+    window.addEventListener(TV_MODE_EVENT, sync);
+    // Khi đổi localStorage ở tab khác
+    window.addEventListener('storage', sync);
     let mql: MediaQueryList | null = null;
     let mql2: MediaQueryList | null = null;
     try {
@@ -26,6 +30,8 @@ export function useTvMode(): boolean {
       window.removeEventListener('resize', sync);
       window.removeEventListener('orientationchange', sync);
       window.removeEventListener('popstate', sync);
+      window.removeEventListener(TV_MODE_EVENT, sync);
+      window.removeEventListener('storage', sync);
       try {
         mql?.removeEventListener?.('change', sync);
         mql2?.removeEventListener?.('change', sync);

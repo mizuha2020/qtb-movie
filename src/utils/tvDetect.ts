@@ -25,20 +25,31 @@ function getStoredOverride(): boolean | null {
   return null;
 }
 
+export const TV_MODE_EVENT = 'gau_tv_mode_change';
+
 export function setTvModeOverride(v: boolean | null) {
   try {
     if (v === null) localStorage.removeItem(TV_FORCE_KEY);
     else localStorage.setItem(TV_FORCE_KEY, v ? '1' : '0');
   } catch {}
   applyTvClass();
+  try {
+    window.dispatchEvent(new Event(TV_MODE_EVENT));
+  } catch {}
 }
 
 export function isTvDevice(): boolean {
   if (typeof window === 'undefined') return false;
 
-  // 1. Override thủ công luôn thắng (test ?tv=1, setting trong app)
+  // 1. Override thủ công luôn thắng (test ?tv=1, setting trong app).
+  // ?tv=1/0 được persist vào localStorage để mở app/TV lần sau vẫn giữ.
   const urlOv = getUrlOverride();
-  if (urlOv !== null) return urlOv;
+  if (urlOv !== null) {
+    try {
+      localStorage.setItem(TV_FORCE_KEY, urlOv ? '1' : '0');
+    } catch {}
+    return urlOv;
+  }
   const storedOv = getStoredOverride();
   if (storedOv !== null) return storedOv;
 
@@ -59,6 +70,10 @@ export function isTvDevice(): boolean {
     // Box UA trơn: màn hình lớn + pointer thô + KHÔNG có pointer fine
     // (kể cả khi báo hover được do cắm chuột, thiếu fine vẫn coi là TV).
     if (w >= 1024 && coarse && !fine) return true;
+    // TV không cảm ứng/không chuột (Chrome/WebView báo pointer:none,
+    // hover:none): màn đủ lớn + không có fine pointer thì chắc chắn là TV.
+    // (Case này trước đây miss nên cài lên TV thật vẫn chạy giao diện web.)
+    if (w >= 960 && !canHover && !fine) return true;
   } catch {}
   return false;
 }

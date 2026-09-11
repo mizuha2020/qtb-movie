@@ -207,6 +207,19 @@ html.tv-mode { font-size: 18px; }
   background-color: rgba(37, 99, 235, 0.4) !important;
   color: #fff !important;
 }
+/* Lưới an toàn khi tv-mode chưa kịp bật / detect hụt trên TV thật:
+   diệt viền vàng mặc định của WebView, thay bằng ring xanh thương hiệu.
+   Chuột desktop không bị ảnh hưởng (chuột không kích hoạt :focus-visible). */
+#qtb-navbar button:focus-visible,
+[data-tv-card]:focus-visible {
+  outline: 2px solid rgba(56, 189, 248, 0.9) !important;
+  outline-offset: 2px !important;
+}
+#gau-player-root:focus, #gau-player-root video:focus,
+#gau-player-root .video-area:focus {
+  outline: none !important;
+  box-shadow: none !important;
+}
 @media (min-width: 1920px) {
   *:focus-visible {
     outline: 4px solid #38bdf8 !important;
