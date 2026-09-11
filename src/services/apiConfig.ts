@@ -107,22 +107,48 @@ export function verifyBackendUrl(): Promise<string> {
   if (typeof window === 'undefined' || !isNativeApp()) {
     return Promise.resolve(getApiBaseUrl());
   }
+  // Đã có backend tin cậy (session/lưu 24h) -> dùng NGAY, verify lại nền
+  // (không chặn phát phim / đổi tập).
+  const trusted = sessionBackendOverride || readPersistedVerified();
+  if (trusted) {
+    if (!verifyPromise) {
+      verifyPromise = (async () => {
+        if (await checkBackendHealth(trusted, 4000)) {
+          sessionBackendOverride = trusted;
+          persistVerified(trusted);
+          return trusted;
+        }
+        if (trusted !== CLOUD_BACKEND_URL && (await checkBackendHealth(CLOUD_BACKEND_URL, 4000))) {
+          console.info(`[backend] ${trusted} unreachable, fallback to ${CLOUD_BACKEND_URL}`);
+          sessionBackendOverride = CLOUD_BACKEND_URL;
+          persistVerified(CLOUD_BACKEND_URL);
+          return CLOUD_BACKEND_URL;
+        }
+        return trusted;
+      })();
+      verifyPromise.catch(() => {});
+    }
+    return Promise.resolve(trusted);
+  }
   if (!verifyPromise) {
+    // Chưa có gì tin cậy: race current vs cloud (4s) thay vì nối tiếp 6s+6s
     verifyPromise = (async () => {
       const current = getApiBaseUrl();
-      if (await checkBackendHealth(current)) {
-        sessionBackendOverride = current;
-        persistVerified(current);
-        return current;
+      const [okCur, okCloud] = await Promise.all([
+        checkBackendHealth(current, 4000),
+        current !== CLOUD_BACKEND_URL
+          ? checkBackendHealth(CLOUD_BACKEND_URL, 4000)
+          : Promise.resolve(false),
+      ]);
+      const win = okCur ? current : okCloud ? CLOUD_BACKEND_URL : current;
+      if (win !== current) {
+        console.info(`[backend] ${current} unreachable, fallback to ${win}`);
       }
-      if (current !== CLOUD_BACKEND_URL && (await checkBackendHealth(CLOUD_BACKEND_URL))) {
-        console.info(`[backend] ${current} unreachable, fallback to ${CLOUD_BACKEND_URL}`);
-        sessionBackendOverride = CLOUD_BACKEND_URL;
-        persistVerified(CLOUD_BACKEND_URL);
-        return CLOUD_BACKEND_URL;
-      }
-      return current;
+      sessionBackendOverride = win;
+      persistVerified(win);
+      return win;
     })();
+    verifyPromise.catch(() => {});
   }
   return verifyPromise;
 }

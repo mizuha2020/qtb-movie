@@ -91,6 +91,24 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
     };
   }, []);
 
+  // TV remote: mở màn hình là focus ngay thẻ profile đầu để D-pad đi được liền
+  useEffect(() => {
+    let isTv = false;
+    try {
+      isTv = document.documentElement.classList.contains('tv-mode');
+    } catch {}
+    if (!isTv) return;
+    const t = window.setTimeout(() => {
+      try {
+        const first = document.querySelector<HTMLElement>(
+          '#qtb-profile-selector [data-tv-card]',
+        );
+        first?.focus({ preventScroll: true } as FocusOptions);
+      } catch {}
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, []);
+
   const allAvatars = [
     ...DEFAULT_AVATARS,
     ...customAvatars.map((c) => c.url).filter((u) => !DEFAULT_AVATARS.includes(u)),
@@ -350,6 +368,10 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                 <motion.div
                   key={profile.id}
                   id={`profile-card-${profile.id}`}
+                  tabIndex={isTransitioning ? -1 : 0}
+                  role="button"
+                  aria-label={`Chọn hồ sơ ${profile.name}`}
+                  data-tv-card={`profile-${profile.id}`}
                   variants={cardVariants}
                   whileHover={
                     !isTransitioning && !isManaging
@@ -360,6 +382,12 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                   }
                   whileTap={!isTransitioning ? { scale: 0.94 } : undefined}
                   onClick={() => handleProfileClick(profile)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleProfileClick(profile);
+                    }
+                  }}
                   animate={{
                     opacity: isOtherDimmed ? 0.2 : 1,
                     scale: isThisSelected ? 1.12 : isOtherDimmed ? 0.92 : 1,
@@ -467,9 +495,19 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
             {canAddProfile && (
               <motion.div
                 id="add-new-profile-card-btn"
+                tabIndex={isTransitioning ? -1 : 0}
+                role="button"
+                aria-label="Thêm hồ sơ mới"
+                data-tv-card="profile-add-new"
                 variants={cardVariants}
                 whileHover={!isTransitioning ? { scale: 1.08, y: -6 } : undefined}
                 whileTap={!isTransitioning ? { scale: 0.94 } : undefined}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
+                    e.preventDefault();
+                    (e.currentTarget as HTMLElement).click();
+                  }
+                }}
                 animate={{
                   opacity: isTransitioning ? 0.2 : 1,
                   filter: isTransitioning ? 'blur(1px)' : 'blur(0px)',

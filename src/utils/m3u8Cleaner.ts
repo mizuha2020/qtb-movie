@@ -336,8 +336,73 @@ export interface CleanedM3u8 {
   /** variant blob URLs khi master multivariant – caller revoke chung với blobUrl */
   extraBlobs?: string[];
 }
+
+/**
+ * Cache TEXT bản clean theo URL gốc (TTL 30 phút, tối đa 20 entries).
+ * Blob URL không giữ qua lần mở (caller revoke khi unmount), nhưng text thì
+ * dựng blob mới tức thì -> lần sau (đổi tập rồi quay lại, preview...) phát
+ * bản sạch NGAY, không fetch+clean lại. Không swap giữa playback.
+ */
+interface CleanTextCache {
+  time: number;
+  removed: number;
+  /** media playlist đơn: text đã clean */
+  mediaText?: string;
+  /** master: template với marker __VARIANT_<idx>__ + text từng variant */
+  masterTemplate?: string[];
+  variantTexts?: string[];
+}
+const CLEAN_TEXT_TTL = 30 * 60 * 1000;
+const cleanTextCache = new Map<string, CleanTextCache>();
+
+function makeBlob(text: string): string {
+  return URL.createObjectURL(new Blob([text], { type: 'application/vnd.apple.mpegurl' }));
+}
+
+/** Dựng CleanedM3u8 từ cache (đồng bộ, không mạng). Null nếu chưa có/hết hạn. */
+export function getCachedCleaned(rawUrl: string): CleanedM3u8 | null {
+  try {
+    const e = cleanTextCache.get(rawUrl);
+    if (!e) return null;
+    if (Date.now() - e.time > CLEAN_TEXT_TTL) {
+      cleanTextCache.delete(rawUrl);
+      return null;
+    }
+    if (e.mediaText) {
+      return { blobUrl: makeBlob(e.mediaText), removed: e.removed };
+    }
+    if (e.masterTemplate && e.variantTexts) {
+      const lines = [...e.masterTemplate];
+      const extraBlobs: string[] = [];
+      e.variantTexts.forEach((t, i) => {
+        const url = makeBlob(t);
+        extraBlobs.push(url);
+        for (let li = 0; li < lines.length; li++) {
+          if (lines[li] === `__VARIANT_${i}__`) lines[li] = url;
+        }
+      });
+      return { blobUrl: makeBlob(lines.join('\n')), removed: e.removed, extraBlobs };
+    }
+  } catch {}
+  return null;
+}
+
+function storeCleanCache(rawUrl: string, entry: CleanTextCache): void {
+  try {
+    if (cleanTextCache.size >= 20) {
+      const oldest = cleanTextCache.keys().next().value;
+      if (oldest !== undefined) cleanTextCache.delete(oldest);
+    }
+    cleanTextCache.set(rawUrl, { ...entry, time: Date.now() });
+  } catch {}
+}
 export async function loadCleanedM3u8Url(rawUrl: string): Promise<CleanedM3u8 | null> {
   if (!rawUrl || !rawUrl.startsWith('http')) return null;
+  // Cache hit -> dựng blob tức thì, không fetch
+  try {
+    const hit = getCachedCleaned(rawUrl);
+    if (hit) return hit;
+  } catch {}
   // Refresh rule chặn QC nền (không await để không chậm phát video)
   try {
     adblockService.refresh().catch(() => {});
@@ -369,13 +434,13 @@ export async function loadCleanedM3u8Url(rawUrl: string): Promise<CleanedM3u8 | 
             const { cleaned, removed } = cleanMediaPlaylist(media, v.uri);
             if (!cleaned.includes('#EXTM3U')) return null;
             const blob = new Blob([cleaned], { type: 'application/vnd.apple.mpegurl' });
-            return { lineIdx: v.lineIdx, url: URL.createObjectURL(blob), removed };
+            return { lineIdx: v.lineIdx, url: URL.createObjectURL(blob), removed, text: cleaned };
           } catch {
             return null;
           }
         })
       );
-      const ok = cleanedVariants.filter(Boolean) as { lineIdx: number; url: string; removed: number }[];
+      const ok = cleanedVariants.filter(Boolean) as { lineIdx: number; url: string; removed: number; text: string }[];
       if (ok.length === 0) return null;
       const extraBlobs: string[] = [];
       let removed = 0;
@@ -393,6 +458,14 @@ export async function loadCleanedM3u8Url(rawUrl: string): Promise<CleanedM3u8 | 
         for (const u of extraBlobs) revokeBlobUrl(u);
         return null;
       }
+      // Lưu cache text để lần sau dựng blob tức thì (marker thay variant blob)
+      const template = [...lines];
+      const variantTexts: string[] = [];
+      ok.forEach((c, i) => {
+        template[c.lineIdx] = `__VARIANT_${i}__`;
+        variantTexts.push(c.text);
+      });
+      storeCleanCache(rawUrl, { time: 0, removed, masterTemplate: template, variantTexts });
       const master = new Blob([lines.join('\n')], { type: 'application/vnd.apple.mpegurl' });
       return { blobUrl: URL.createObjectURL(master), removed, extraBlobs };
     }
@@ -400,6 +473,7 @@ export async function loadCleanedM3u8Url(rawUrl: string): Promise<CleanedM3u8 | 
       const { cleaned, removed } = cleanMediaPlaylist(content, rawUrl);
       // Không cắt gì -> trả null để player dùng URL gốc (tránh blob gây lệch seek/preview)
       if (removed === 0) return null;
+      storeCleanCache(rawUrl, { time: 0, removed, mediaText: cleaned });
       const blob = new Blob([cleaned], { type: 'application/vnd.apple.mpegurl' });
       return { blobUrl: URL.createObjectURL(blob), removed };
     }

@@ -79,6 +79,45 @@ function center(r: DOMRect) {
   return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
 }
 
+/**
+ * Mốc thời gian focus được chuyển bằng code (D-pad/tự động), để hover-sync
+ * phân biệt với mouseover THẬT từ chuột. Cuộn trang làm phần tử trôi xuống
+ * dưới con trỏ đang đậu yên -> browser bắn mouseover giả -> phải bỏ qua,
+ * không thì focus bị giật về chỗ cũ sau mỗi lần bấm.
+ */
+let lastProgFocus = 0;
+export function markProgrammaticFocus(): void {
+  try {
+    lastProgFocus = Date.now();
+  } catch {}
+}
+export function lastProgrammaticFocus(): number {
+  return lastProgFocus;
+}
+
+/** Log điều hướng cuối (hiện trong panel ?tvdebug=1 để debug remote). */
+let lastMoveInfo = '';
+let lastMoveSeq = 0;
+export function getLastTvMove(): string {
+  return lastMoveInfo ? `#${lastMoveSeq} ${lastMoveInfo}` : '';
+}
+function setLastTvMove(s: string): void {
+  try {
+    lastMoveSeq += 1;
+    lastMoveInfo = s;
+  } catch {}
+}
+function describeEl(el: HTMLElement | null): string {
+  if (!el) return '(none)';
+  try {
+    const id = el.id || el.getAttribute('data-tv-card') || '?';
+    const r = el.getBoundingClientRect();
+    return `${el.tagName}#${id} y=${Math.round(r.top)}..${Math.round(r.bottom)}`;
+  } catch {
+    return '(err)';
+  }
+}
+
 /** Cuộn trang + hàng ngang để focus luôn nhìn thấy (không dùng scrollIntoView:
  *  block:'nearest' trên WebView TV lúc cuộn lúc không). Mỗi lần bấm = màn hình đi theo.
  *  Tween tay 200ms ease-out: mượt hơn instant (giật) mà không bò như smooth của browser.
@@ -119,6 +158,32 @@ function smoothWindowScrollBy(dy: number) {
 }
 
 const rowRafs = new WeakMap<HTMLElement, number>();
+function smoothVertScrollTo(el: HTMLElement, to: number) {
+  try {
+    const prev = rowRafs.get(el);
+    if (prev) cancelAnimationFrame(prev);
+    const from = el.scrollTop;
+    const d = to - from;
+    if (!d) return;
+    if (reduceMotion()) {
+      el.scrollTop = to;
+      return;
+    }
+    const t0 = performance.now();
+    const step = (t: number) => {
+      const p = Math.min(1, (t - t0) / TV_SCROLL_MS);
+      el.scrollTop = Math.round(from + d * easeOutCubic(p));
+      if (p < 1) {
+        rowRafs.set(el, requestAnimationFrame(step));
+      }
+    };
+    rowRafs.set(el, requestAnimationFrame(step));
+  } catch {
+    try {
+      el.scrollTop = to;
+    } catch {}
+  }
+}
 function smoothRowScrollTo(el: HTMLElement, to: number) {
   try {
     const prev = rowRafs.get(el);
@@ -153,17 +218,105 @@ function smoothRowScrollTo(el: HTMLElement, to: number) {
   }
 }
 
-export function tvScrollIntoView(el: HTMLElement) {
+export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
   try {
     const r = el.getBoundingClientRect();
     const vh = window.innerHeight || 800;
-    // Dọc: cuộn window, chừa chỗ navbar dính trên đầu
+    // Dọc: ưu tiên khung scroll trong GẦN NHẤT mà ĐỦ CHỖ chứa dy
+    // (trang chi tiết fullpage, modal... cuộn bằng container riêng).
+    // Khung gần mà chứa không đủ (lưới tập max-h-96) thì đi tiếp lên khung lớn
+    // hơn, chứ không rớt về window (window đang bị khóa khi modal mở).
+    // Mọi khung scroll dọc chứa el, từ gần ra xa (bỏ qua carousel ngang).
+    const scrollers: HTMLElement[] = [];
+    try {
+      let p: HTMLElement | null = el.parentElement;
+      while (p && p !== document.body && p !== document.documentElement) {
+        if (p.scrollHeight > p.clientHeight + 8) {
+          let oy = '';
+          let ox = '';
+          try {
+            const cs = window.getComputedStyle(p);
+            oy = cs.overflowY;
+            ox = cs.overflowX;
+          } catch {}
+          if (oy === 'auto' || oy === 'scroll') {
+            // BỎ QUA carousel ngang (hàng phim overflow-x-auto): scrollHeight
+            // của nó có thể dư vài px do bo tròn, nhưng scrollTop gần như
+            // không nhúc nhích -> cuộn dọc vào đây là mất dy (bug Netflix zone).
+            const isHorizCarousel =
+              (ox === 'auto' || ox === 'scroll') &&
+              p.scrollWidth > p.clientWidth + 8;
+            if (!isHorizCarousel) scrollers.push(p);
+          }
+        }
+        p = p.parentElement;
+      }
+    } catch {}
+    // Chừa chỗ navbar dính trên đầu / bottom-nav
     const topSafe = 140;
     const bottomSafe = 60;
     let dy = 0;
     if (r.top < topSafe) dy = r.top - topSafe;
     else if (r.bottom > vh - bottomSafe) dy = r.bottom - (vh - bottomSafe);
-    if (dy !== 0) smoothWindowScrollBy(dy);
+    if (dy !== 0) {
+      // Chọn khung GẦN NHẤT mà còn đủ chỗ chứa dy theo đúng chiều.
+      // VD trang chi tiết: lưới tập (max-h-96) chứa không đủ thì leo tiếp
+      // lên khung fullpage, chứ rớt về window là đứng yên (window đang khóa).
+      let picked: HTMLElement | null = null;
+      try {
+        for (const s of scrollers) {
+          const max = s.scrollHeight - s.clientHeight;
+          const avail = dy > 0 ? max - s.scrollTop : s.scrollTop;
+          if (avail >= Math.abs(dy) - 4) {
+            picked = s;
+            break;
+          }
+        }
+        if (!picked && scrollers.length) {
+          // Không khung nào đủ chỗ: lấy khung chứa được NHIỀU NHẤT
+          // (thay vì window đang khóa) để trang vẫn nhúc nhích theo focus.
+          let bestCap = -1;
+          for (const s of scrollers) {
+            const max = s.scrollHeight - s.clientHeight;
+            const avail = dy > 0 ? max - s.scrollTop : s.scrollTop;
+            if (avail > bestCap) {
+              bestCap = avail;
+              picked = s;
+            }
+          }
+          if (bestCap <= 0) picked = null;
+        }
+      } catch {
+        picked = null;
+      }
+      if (picked) {
+        setLastTvMove(`scroll inner ${picked.tagName}.${String(picked.className || '').slice(0, 30)} dy=${Math.round(dy)} -> ${describeEl(el)}`);
+        smoothVertScrollTo(picked, picked.scrollTop + Math.round(dy));
+      } else {
+        if (scrollers.length) {
+          setLastTvMove(`scroll window (inners full) dy=${Math.round(dy)} -> ${describeEl(el)}`);
+        } else {
+          setLastTvMove(`scroll window dy=${Math.round(dy)} -> ${describeEl(el)}`);
+        }
+        smoothWindowScrollBy(dy);
+      }
+      // Lưới an toàn: tween có thể bị hủy (bấm dồn) hoặc RAF rớt frame ->
+      // sau 320ms mà target vẫn ngoài màn hình thì cuộn lại 1 lần duy nhất.
+      if (_depth === 0) {
+        const target = el;
+        window.setTimeout(() => {
+          try {
+            if (document.activeElement !== target) return;
+            const r2 = target.getBoundingClientRect();
+            const vh2 = window.innerHeight || 800;
+            if (r2.bottom > vh2 - bottomSafe || r2.top < topSafe) {
+              setLastTvMove(`RETRY scroll -> ${describeEl(target)}`);
+              tvScrollIntoView(target, 1);
+            }
+          } catch {}
+        }, 320);
+      }
+    }
     // Ngang: căn giữa item trong MỌI tổ tiên cuộn được (thường chỉ có hàng phim)
     let p: HTMLElement | null = el.parentElement;
     while (p && p !== document.body && p !== document.documentElement) {
@@ -192,6 +345,15 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
     const cr = active.getBoundingClientRect();
     if (!cr || cr.width <= 4 || cr.height <= 4) return false;
     const cx = cr.left + cr.width / 2;
+    // Tọa độ dọc theo DOCUMENT (không phụ thuộc vị trí cuộn hiện tại):
+    // bấm dồn giữa lúc trang đang tween thì rect viewport thay đổi liên tục,
+    // còn document-Y thì ổn định -> không bao giờ nhảy nhầm list xa.
+    let scrollY = 0;
+    try {
+      scrollY = window.scrollY || window.pageYOffset || 0;
+    } catch {}
+    const activeDocTop = cr.top + scrollY;
+    const activeDocBottom = cr.bottom + scrollY;
     let cards: HTMLElement[];
     try {
       cards = Array.from(
@@ -213,11 +375,13 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
       if (!r || r.width <= 4 || r.height <= 4) continue;
       if (dir === 'up') {
         // Card phải nằm hẳn phía trên (trừ hao 4px lệch layout)
-        if (r.bottom > cr.top - 4) continue;
-        cands.push({ el, r, edge: r.bottom });
+        const docBottom = r.bottom + scrollY;
+        if (docBottom > activeDocTop - 4) continue;
+        cands.push({ el, r, edge: docBottom });
       } else {
-        if (r.top < cr.bottom + 4) continue;
-        cands.push({ el, r, edge: r.top });
+        const docTop = r.top + scrollY;
+        if (docTop < activeDocBottom + 4) continue;
+        cands.push({ el, r, edge: docTop });
       }
     }
     if (!cands.length) return false;
@@ -231,14 +395,14 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
     const row = cands.filter((c) => Math.abs(c.edge - rowEdge) <= ROW_BAND);
     if (!row.length) return false;
     // Trong cùng hàng: chọn card gần nhất theo trục X (cùng cột),
-    // rớt第二位 mới xét khoảng cách dọc để ổn định.
+    // chênh dọc chỉ tính nhẹ để ổn định.
     let best: Cand | null = null;
     let bestScore = Infinity;
     for (const c of row) {
       const px = c.r.left + c.r.width / 2;
       const dx = Math.abs(px - cx);
       const dy =
-        dir === 'up' ? cr.top - c.edge : c.edge - cr.bottom;
+        dir === 'up' ? activeDocTop - c.edge : c.edge - activeDocBottom;
       const score = dx + Math.max(0, dy) * 0.15;
       if (score < bestScore) {
         bestScore = score;
@@ -246,6 +410,8 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
       }
     }
     if (!best) return false;
+    markProgrammaticFocus();
+    setLastTvMove(`row-${dir} from ${describeEl(active)} to ${describeEl(best.el)} (row=${row.length})`);
     try {
       best.el.focus({ preventScroll: true } as FocusOptions);
     } catch {
@@ -305,6 +471,7 @@ function focusIntermediateAbove(active: HTMLElement): boolean {
       }
     }
     if (!best) return false;
+    markProgrammaticFocus();
     try {
       best.focus({ preventScroll: true } as FocusOptions);
     } catch {
@@ -328,6 +495,52 @@ export function focusNearest(dir: TvDirection): boolean {
       ensureTvFocus();
       return true;
     }
+    // Modal fullscreen đang mở (detail/player-overlay...) mà focus còn kẹt
+    // ở nền phía sau: lôi focus vào trong modal, không cho đi lang thang.
+    try {
+      const overlays = Array.from(
+        document.querySelectorAll<HTMLElement>(
+          '#movie-detail-fullpage, [role="dialog"]',
+        ),
+      ).filter((m) => {
+        try {
+          if (!isVisible(m)) return false;
+          const cs = window.getComputedStyle(m);
+          // Chỉ tính overlay phủ màn hình / fixed (modal thật)
+          if (cs.position !== 'fixed') return false;
+          const r = m.getBoundingClientRect();
+          return r.width >= window.innerWidth * 0.6 && r.height >= window.innerHeight * 0.6;
+        } catch {
+          return false;
+        }
+      });
+      const top = overlays[overlays.length - 1] || null;
+      if (top && !top.contains(active)) {
+        const first = Array.from(
+          top.querySelectorAll<HTMLElement>(
+            'button:not([disabled]), a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          ),
+        ).find((el) => {
+          try {
+            return isVisible(el);
+          } catch {
+            return false;
+          }
+        });
+        if (first) {
+          markProgrammaticFocus();
+          setLastTvMove(`pull-into-modal from ${describeEl(active)} to ${describeEl(first)}`);
+          try {
+            first.focus({ preventScroll: true } as FocusOptions);
+          } catch {
+            first.focus();
+          }
+          tvScrollIntoView(first);
+          return true;
+        }
+        return true; // modal mở mà không có gì focus được -> nuốt phím
+      }
+    } catch {}
     // Đang đứng trong dialog/modal: bẫy focus trong cùng dialog,
     // không cho D-pad xuyên ra nền.
     try {
@@ -357,11 +570,14 @@ export function focusNearest(dir: TvDirection): boolean {
             }
           }
           if (bestD) {
+            markProgrammaticFocus();
+            setLastTvMove(`dialog-${dir} from ${describeEl(active)} to ${describeEl(bestD)}`);
             try {
               bestD.focus({ preventScroll: true } as FocusOptions);
             } catch {
               bestD.focus();
             }
+            tvScrollIntoView(bestD);
             return true;
           }
           return true; // hết hướng trong dialog -> nuốt phím, không xuyên nền
@@ -423,6 +639,8 @@ export function focusNearest(dir: TvDirection): boolean {
       }
     }
     if (best) {
+      markProgrammaticFocus();
+      setLastTvMove(`generic-${dir} from ${describeEl(active)} to ${describeEl(best)}`);
       try {
         best.focus({ preventScroll: true } as FocusOptions);
       } catch {
@@ -431,6 +649,7 @@ export function focusNearest(dir: TvDirection): boolean {
       tvScrollIntoView(best);
       return true;
     }
+    setLastTvMove(`NO-TARGET ${dir} from ${describeEl(active)}`);
     return false;
   } catch {
     return false;
@@ -446,6 +665,7 @@ export function ensureTvFocus(): boolean {
     for (const sel of priority) {
       const el = document.querySelector<HTMLElement>(sel);
       if (el && isVisible(el)) {
+        markProgrammaticFocus();
         el.focus({ preventScroll: true } as FocusOptions);
         tvScrollIntoView(el);
         return true;
@@ -453,6 +673,7 @@ export function ensureTvFocus(): boolean {
     }
     const first = getFocusable()[0];
     if (first) {
+      markProgrammaticFocus();
       first.focus({ preventScroll: true } as FocusOptions);
       return true;
     }
@@ -520,6 +741,11 @@ export function handleTvKey(e: KeyboardEvent): boolean {
 
   // D-pad di chuyển
   if (k === 'ArrowLeft' || k === 'ArrowRight' || k === 'ArrowUp' || k === 'ArrowDown') {
+    try {
+      setLastTvMove(
+        `key ${k} target=${describeEl(document.activeElement as HTMLElement | null)} tv=${isTvModeActive()} player=${isPlayerOpen()} prevented=${e.defaultPrevented}`,
+      );
+    } catch {}
     const dir: TvDirection =
       k === 'ArrowLeft' ? 'left' : k === 'ArrowRight' ? 'right' : k === 'ArrowUp' ? 'up' : 'down';
     // Fast-path O(1): đang đứng trên card mà đi ngang -> qua card kề trong cùng hàng,

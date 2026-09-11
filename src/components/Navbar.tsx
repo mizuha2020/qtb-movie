@@ -322,8 +322,13 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span className="text-xl sm:text-2xl font-black tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-sky-300 to-indigo-400 transition-all drop-shadow-[0_2px_12px_rgba(59,130,246,0.5)]">
                 Gấu
               </span>
-              <span className="text-[9px] sm:text-[10px] uppercase font-black tracking-[0.2em] text-sky-400/90 -mt-1">
+              <span className="text-[9px] sm:text-[10px] uppercase font-black tracking-[0.2em] text-sky-400/90 -mt-1 flex items-center gap-1">
                 CINEMA
+                {isTvMode && (
+                  <span className="text-[8px] font-black tracking-normal text-emerald-300 bg-emerald-950 border border-emerald-700/80 px-1 rounded">
+                    TV
+                  </span>
+                )}
               </span>
             </div>
           </button>

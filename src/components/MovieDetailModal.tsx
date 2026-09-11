@@ -694,10 +694,31 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
 
   if (!movie || !currentData) return null;
 
+  // TV remote: mở trang chi tiết là focus ngay nút Xem để D-pad đi được liền
+  useEffect(() => {
+    let isTv = false;
+    try {
+      isTv = document.documentElement.classList.contains('tv-mode');
+    } catch {}
+    if (!isTv) return;
+    const t = window.setTimeout(() => {
+      try {
+        const btn = document.querySelector<HTMLElement>(
+          '#hero-primary-play-btn, #detail-floating-close-btn',
+        );
+        btn?.focus({ preventScroll: true } as FocusOptions);
+      } catch {}
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [movie?.slug]);
+
   return (
     <motion.div
         ref={containerRef}
         id="movie-detail-fullpage"
+        role="dialog"
+        aria-modal="true"
+        aria-label={currentData?.name || movie?.name || 'Chi tiết phim'}
         initial={{ opacity: 0, scale: 0.90, y: 28 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.86, y: 32 }}
@@ -2106,12 +2127,22 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                   <div
                     key={m.slug}
                     id={`detail-related-movie-${m.slug}`}
+                    tabIndex={0}
+                    role="button"
+                    aria-label={`Xem ${m.name}`}
+                    data-tv-card={`related-${m.slug}`}
                     onClick={() => {
                       if (onSelectRelatedMovie) {
                         onSelectRelatedMovie(m);
                       }
                       if (containerRef.current) {
                         containerRef.current.scrollTo({ top: 0, behavior: 'smooth' });
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
+                        e.preventDefault();
+                        (e.currentTarget as HTMLElement).click();
                       }
                     }}
                     className="group cursor-pointer bg-slate-900 rounded-xl overflow-hidden border border-slate-800 hover:border-blue-500/80 transition-all hover:scale-105 shadow-md flex flex-col"

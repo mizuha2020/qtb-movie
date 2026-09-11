@@ -11,11 +11,14 @@ import { MovieCard } from "./MovieCard";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useTvMode } from "../hooks/useTvMode";
 import { smoothScrollHorizontal } from "../utils/scrollUtils";
+import { RowSkeleton } from "./RowSkeleton";
 
 interface MovieRowProps {
   title: string;
   movies: Movie[];
   isTop10?: boolean;
+  /** Đang chờ dữ liệu -> vẽ skeleton giữ chỗ, chống layout shift trượt focus TV */
+  pending?: boolean;
   onPlay?: (movie: Movie) => void;
   onPlayMovie?: (movie: Movie) => void;
   onOpenDetail?: (movie: Movie) => void;
@@ -30,6 +33,7 @@ export const MovieRow: React.FC<MovieRowProps> = ({
   title,
   movies,
   isTop10 = false,
+  pending = false,
   onPlay,
   onPlayMovie,
   onOpenDetail,
@@ -404,7 +408,10 @@ export const MovieRow: React.FC<MovieRowProps> = ({
     [isInMyList],
   );
 
-  if (!movies || movies.length === 0) return null;
+  if (!movies || movies.length === 0) {
+    if (pending) return <RowSkeleton title={title} tall={isTop10} />;
+    return null;
+  }
   const canScroll = movies.length > 2;
 
   // MOBILE: native scroll - behavior giống e0ccb2e/52269b8

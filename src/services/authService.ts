@@ -11,6 +11,7 @@ import {
 } from 'firebase/firestore';
 import { db, isFirestoreQuotaExhausted, sanitizeData } from './firebase';
 import { Account, UserProfile } from '../types';
+import { sha256Hex } from '../utils/sha256';
 
 const SESSION_ACCOUNT_KEY = 'qtb_logged_in_account_v1';
 const SESSION_PROFILE_KEY = 'qtb_current_active_profile_v1';
@@ -50,12 +51,10 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs = 4500, fallbackVal?: T):
   ]);
 }
 
-// Hash password with SHA-256 using Web Crypto API
+// Hash password SHA-256 (WebCrypto, fallback thuần JS khi mở qua IP LAN
+// HTTP không phải secure context khiến crypto.subtle undefined)
 export async function hashPassword(password: string): Promise<string> {
-  const msgUint8 = new TextEncoder().encode(password + PASSWORD_SALT);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgUint8);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+  return sha256Hex(password + PASSWORD_SALT);
 }
 
 // Check if string matches a 64-char hex SHA-256 hash

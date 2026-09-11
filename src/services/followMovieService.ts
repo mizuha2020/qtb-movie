@@ -127,9 +127,9 @@ export const followMovieService = {
     if (list.length === 0) return 0;
     let updated = 0;
     const newlyUpdated: FollowedMovie[] = [];
-    // check sequentially to avoid rate limit, max 12
+    // Batch concurrency 5 (nhanh gấp ~5 lần for-await nối tiếp mà không burst)
     const toCheck = list.slice(0, 20);
-    for (const item of toCheck) {
+    const checkOne = async (item: (typeof toCheck)[number]) => {
       try {
         const detail = await movieApi.getMovieDetail(item.slug);
         const movie = detail.movie;
@@ -138,7 +138,7 @@ export const followMovieService = {
         const latestFromCount = episodesCount ? `Tập ${episodesCount}` : latestEp;
         // use the richer one
         const effectiveLatest = latestFromCount || latestEp;
-        if (!effectiveLatest) continue;
+        if (!effectiveLatest) return;
         const hasNew = isNewEpisode(item.lastKnownEpisode, effectiveLatest);
         // also if count increased
         if (hasNew && !item.hasNewEpisode) {
@@ -156,8 +156,9 @@ export const followMovieService = {
         if (movie.thumb_url) item.thumb_url = movie.thumb_url;
         if (movie.poster_url) item.poster_url = movie.poster_url;
       } catch {}
-      // small delay to avoid burst
-      await new Promise(r=> setTimeout(r, 200));
+    };
+    for (let i = 0; i < toCheck.length; i += 5) {
+      await Promise.all(toCheck.slice(i, i + 5).map(checkOne));
     }
     if (updated > 0) {
       saveRaw(accountId, profileId, list);

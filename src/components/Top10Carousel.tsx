@@ -11,6 +11,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 import { getImageUrl } from "../services/movieApi";
 import { useTvMode } from "../hooks/useTvMode";
 import { smoothScrollHorizontal } from "../utils/scrollUtils";
+import { RowSkeleton } from "./RowSkeleton";
 
 interface Top10CarouselProps {
   title: string;
@@ -19,6 +20,8 @@ interface Top10CarouselProps {
   onPlay: (movie: Movie) => void;
   accentColor?: string;
   hideTitle?: boolean;
+  /** Đang chờ dữ liệu -> vẽ skeleton giữ chỗ, chống layout shift trượt focus TV */
+  pending?: boolean;
 }
 
 export const Top10Carousel: React.FC<Top10CarouselProps> = ({
@@ -27,6 +30,7 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
   onOpenDetail,
   accentColor = "#2563EB",
   hideTitle = false,
+  pending = false,
 }) => {
   // Native scroll cho: màn nhỏ (<1024) + MỌI thiết bị cảm ứng (pointer chính là coarse),
   // không phân biệt cỡ màn hình — màn cảm ứng càng to càng phải vuốt tự do.
@@ -383,7 +387,10 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
     };
   }, [isMobile, loopMovies]);
 
-  if (!top10Movies.length) return null;
+  if (!top10Movies.length) {
+    if (pending && !hideTitle) return <RowSkeleton title={title} tall />;
+    return null;
+  }
 
   if (isMobile) {
     return (

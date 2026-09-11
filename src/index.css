@@ -176,10 +176,8 @@ video::-webkit-media-controls {
   display: none;
 }
 
-/* TV 10-foot UI: Overscan safe area 5% + large focus + 10ft scaling */
+/* TV: giữ nguyên cỡ desktop (không phóng to chữ/UI), chỉ giữ focus + perf + ẩn trỏ */
 .tv-mode { --tv-safe: 5vw; }
-/* Scale gốc 16px -> 18px để mọi text dùng rem (text-xs/sm/base) to ra ~12% khi ngồi xa */
-html.tv-mode { font-size: 18px; }
 @media (min-width: 1920px) {
   :root { --tv-safe: 5vw; }
 }
@@ -220,6 +218,21 @@ html.tv-mode { font-size: 18px; }
   outline: none !important;
   box-shadow: none !important;
 }
+/* Netflix TV: timeline focus thì KHÔNG vẽ vòng quanh cả hàng,
+   chỉ sáng track + núm (gọn như Netflix) */
+.tv-mode .group\/scrub:focus,
+.tv-mode .group\/scrub:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+.tv-mode .group\/scrub:focus-visible .scrub-track {
+  background: rgba(255, 255, 255, 0.32) !important;
+}
+.tv-mode .group\/scrub:focus-visible .scrub-progress::after {
+  box-shadow: 0 0 0 5px rgba(56, 189, 248, 0.45), 0 0 14px rgba(56, 189, 248, 0.5) !important;
+}
+/* TV: ẩn hẳn nút tua ±10s ở hàng bottom (tua bằng timeline + D-pad) */
+.tv-mode .tv-player-bottom .tv-seek-btn { display: none !important; }
 @media (min-width: 1920px) {
   *:focus-visible {
     outline: 4px solid #38bdf8 !important;
@@ -236,32 +249,18 @@ html.tv-mode { font-size: 18px; }
 /* TV buttons: KHÔNG đặt min-height toàn cục (từng làm dots hero h-1.5 bị kéo thành thanh dọc 48px).
    Nút player đã có rule riêng (.tv-player-bottom button), nút </> carousel đã cao sẵn (h-14+). */
 #qtb-hero-banner button { min-height: 0; }
-/* HeroBanner TV: gọn để thấy nhiều hàng phim (kiểu Netflix) */
-.tv-mode #qtb-hero-banner { min-height: 440px !important; height: 64vh !important; max-height: 640px !important; }
-.tv-mode #qtb-hero-banner h1 { font-size: 3.75rem !important; line-height: 1.1 !important; }
-@media (min-width: 1920px) {
-  #qtb-hero-banner { min-height: 640px !important; height: 82vh !important; max-height: 860px !important; }
-  #qtb-hero-banner h1 { font-size: 3.75rem !important; line-height: 1.1 !important; }
-}
-.tv-mode #qtb-hero-banner .max-w-2xl { max-width: 48rem !important; }
-.tv-mode #hero-play-btn, .tv-mode #hero-detail-btn { padding: 16px 32px !important; font-size: 1.1rem !important; min-height: 52px; }
-.tv-mode #hero-add-list-btn { width: 52px !important; height: 52px !important; }
-/* TV MovieRow: always show arrows, larger cards handled in component */
+/* TV MovieRow: always show arrows */
 @media (min-width: 1920px) {
   .group\/row .opacity-0.group-hover\/row\:opacity-100 {
     opacity: 1 !important;
   }
 }
 .tv-mode .group\/row .opacity-0.group-hover\/row\:opacity-100 { opacity: 1 !important; }
-/* SimplePlayer TV: larger controls + overscan */
-.tv-mode #simple-player-close-btn { width: 56px !important; height: 56px !important; }
-.tv-mode .group\/center-skip, .tv-mode .group\/center-play { transform: scale(1.25); }
-.tv-mode .tv-player-bottom { padding-left: 3vw !important; padding-right: 3vw !important; padding-bottom: 2vw !important; gap: 16px !important; }
-.tv-mode .tv-player-top { padding-left: 3vw !important; padding-right: 3vw !important; padding-top: 2vw !important; }
-.tv-mode .tv-progress-height { height: 28px !important; }
-.tv-mode .tv-player-bottom button { padding: 10px !important; min-width: 48px; min-height: 48px; }
-.tv-mode .tv-player-bottom svg { width: 28px !important; height: 28px !important; }
-.tv-mode .tv-player-bottom span { font-size: 16px !important; }
+/* TV: ẩn hẳn con trỏ chuột bay để khỏi loạn với vòng focus xanh.
+   (kèm hover-sync trong useTvRemote: lia chuột tới đâu focus theo tới đó) */
+.tv-mode, .tv-mode * {
+  cursor: none !important;
+}
 /* TV perf (fix lag): chip TV yếu nhất ở backdrop-blur + transition/hover + marquee chạy nền.
    Tắt hết trên tv-mode, desktop/phone giữ nguyên. */
 .tv-mode #qtb-navbar { background: #0b1329 !important; backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
@@ -275,7 +274,6 @@ html.tv-mode { font-size: 18px; }
 .tv-mode .group\/row, .tv-mode .group\/row * { transition-duration: 0.01ms !important; }
 .tv-mode .animate-cucumber-marquee { animation: none !important; }
 .tv-mode .animate-pulse, .tv-mode .animate-ping, .tv-mode .animate-spin-slow { animation: none !important; }
-.tv-mode .tv-player-bottom .tv-seek-btn { display: flex !important; }
 .tv-mode [data-tv-card] { scroll-margin: 24px; border-radius: 12px; }
 /* Focus card kiểu Netflix: chỉ zoom (không viền), transition riêng transform cho mượt */
 .tv-mode [data-tv-card]:focus,
@@ -293,27 +291,8 @@ html.tv-mode { font-size: 18px; }
   outline: none !important;
   box-shadow: none !important;
 }
-/* 10-foot typography + overscan (bước 3): ngồi 3m vẫn đọc được, TV cũ không cắt viền */
-/* Navbar: nút to, chữ to, chừa safe-area */
-.tv-mode #qtb-navbar { padding-left: max(2.5vw, 24px) !important; padding-right: max(2.5vw, 24px) !important; }
-.tv-mode #qtb-navbar nav button { font-size: 1.05rem !important; padding: 12px 16px !important; min-height: 52px; }
-.tv-mode #qtb-navbar #brand-logo-btn span:first-child { font-size: 1.75rem !important; }
-/* Tiêu đề các hàng phim */
-.tv-mode .group\/row h2 { font-size: 1.6rem !important; }
-.tv-mode .group\/row h2 span { font-size: inherit; }
-/* Tên phim trên card */
-.tv-mode [data-tv-card] h3 { font-size: 1.02rem !important; line-height: 1.35 !important; }
-.tv-mode [data-tv-card] .text-\[11px\] { font-size: 0.85rem !important; }
-/* Trang chi tiết fullpage: chữ mô tả + nút hành động to */
-.tv-mode #movie-detail-fullpage { font-size: 1.05rem; }
-.tv-mode #movie-detail-fullpage button { min-height: 52px; }
-.tv-mode #movie-detail-fullpage p { line-height: 1.7 !important; }
-/* Login / Profile chọn người xem: form hẹp trên TV 55" -> nới rộng, input cao */
-.tv-mode #qtb-login-screen > div { max-width: 640px !important; }
-.tv-mode #qtb-login-screen input { padding: 18px 20px 18px 52px !important; font-size: 1.15rem !important; min-height: 60px; }
-.tv-mode #qtb-login-screen #login-submit-btn { min-height: 60px; font-size: 1.1rem !important; }
-/* Dialog/toast chung: chữ không quá nhỏ */
-.tv-mode [role="dialog"] { font-size: 1.05rem; }
+/* TV giữ nguyên cỡ desktop: không phóng to chữ/nút ở navbar, hàng phim,
+   trang chi tiết, login, dialog (revert 10-foot scaling theo yêu cầu). */
 
 
 

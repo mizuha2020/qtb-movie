@@ -17,18 +17,14 @@ import {
   WatchRoom,
   WatchRoomMember,
 } from '../types';
+import { sha256Hex } from '../utils/sha256';
 
 const ROOMS_PATH = 'rooms';
 const USERS_PATH = 'users';
 const PRESENCE_PATH = 'wtPresence';
 
 async function hashPassword(password: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const data = encoder.encode(password + 'qtb-watch-together-salt');
-  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
-  return Array.from(new Uint8Array(hashBuffer))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
+  return sha256Hex(password + 'qtb-watch-together-salt');
 }
 
 class WatchTogetherService {

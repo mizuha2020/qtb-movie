@@ -165,6 +165,17 @@ export function getImageUrl(path?: string, source?: ApiSource | string): string 
   return `https://img.ophim.live/uploads/movies/${cleanPath}`;
 }
 
+// Ép ảnh TMDB về đúng cỡ hiển thị (original 4K vài MB -> w1280/w500 vài trăm KB)
+export function sizedTmdbUrl(url: string | null | undefined, size: 'w300' | 'w500' | 'w780' | 'w1280' = 'w1280'): string | null {
+  if (!url) return null;
+  try {
+    if (!url.includes('image.tmdb.org')) return url;
+    return url.replace(/\/original(?=\/)|\/w\d+(?=\/)/, `/${size}`);
+  } catch {
+    return url;
+  }
+}
+
 // --- High-quality hero image optimizer (wsrv.nl like chophim.app, but some CDNs blocked) ---
 export function getOptimizedImageUrl(url: string, width = 1920, quality = 85): string {
   if (!url || url.includes('unsplash.com')) return url;
@@ -343,6 +354,9 @@ export async function getTmdbAssets(tmdbId: string | number, tmdbType?: string):
     } catch {}
   }
 
+  // Chuẩn hóa cỡ ngay tại nguồn: backdrop w1280, logo w500 (hiển thị max-h-32)
+  backdropUrl = sizedTmdbUrl(backdropUrl, 'w1280');
+  logoUrl = sizedTmdbUrl(logoUrl, 'w500');
   const result = { backdropUrl, logoUrl };
   tmdbBackdropCacheClient.set(cacheKey, backdropUrl);
   tmdbLogoCacheClient.set(cacheKey, logoUrl);
@@ -402,7 +416,7 @@ export async function getTmdbTrending(): Promise<TmdbTrendingItem[]> {
           vote_average: r.vote_average || 0,
           backdrop_path: r.backdrop_path || null,
           poster_path: r.poster_path || null,
-          backdropUrl: r.backdrop_path ? `https://image.tmdb.org/t/p/original${r.backdrop_path}` : null,
+          backdropUrl: r.backdrop_path ? `https://image.tmdb.org/t/p/w1280${r.backdrop_path}` : null,
           posterUrl: r.poster_path ? `https://image.tmdb.org/t/p/w500${r.poster_path}` : null,
         }));
         tmdbTrendingCacheClient.set("trending", { data: items, time: Date.now() });
@@ -428,7 +442,7 @@ export async function getTmdbTrending(): Promise<TmdbTrendingItem[]> {
         vote_average: r.vote_average || 0,
         backdrop_path: r.backdrop_path || null,
         poster_path: r.poster_path || null,
-        backdropUrl: r.backdrop_path ? `https://image.tmdb.org/t/p/original${r.backdrop_path}` : null,
+        backdropUrl: r.backdrop_path ? `https://image.tmdb.org/t/p/w1280${r.backdrop_path}` : null,
         posterUrl: r.poster_path ? `https://image.tmdb.org/t/p/w500${r.poster_path}` : null,
       }));
       tmdbTrendingCacheClient.set("trending", { data: items, time: Date.now() });
@@ -742,13 +756,44 @@ function pickBestHeroMatch(foundItems: any[], opts: { title: string; originalTit
   return best;
 }
 
+const HERO_LS_KEY = 'qtb_hero_popular_v1';
+const HERO_LS_TTL = 24 * 60 * 60 * 1000;
+function readHeroLS(): Movie[] | null {
+  try {
+    const raw = localStorage.getItem(HERO_LS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { items?: any[]; at?: number };
+    if (!parsed?.items || !Array.isArray(parsed.items) || parsed.items.length < 8) return null;
+    if (!parsed.at || Date.now() - parsed.at > HERO_LS_TTL) return null;
+    return parsed.items.map((m: any) => normalizeMovieItem(m, (m.source as ApiSource) || 'kkphim'));
+  } catch {
+    return null;
+  }
+}
+function saveHeroLS(items: any[]): void {
+  try {
+    localStorage.setItem(HERO_LS_KEY, JSON.stringify({ items, at: Date.now() }));
+  } catch {}
+}
+
+/** Stale-while-revalidate: cache local có là trả ngay + refresh nền. */
 export async function getTmdbHeroPopular(): Promise<Movie[]> {
+  const ls = readHeroLS();
+  if (ls) {
+    refreshHeroPopular().catch(() => {});
+    return ls;
+  }
+  return refreshHeroPopular();
+}
+
+async function refreshHeroPopular(): Promise<Movie[]> {
   const nowTs = Date.now();
 
   // 1. Direct Firebase Read (Firestore + RTDB)
   try {
     const cached = await readCacheFromFirebase('hero_banner');
     if (cached?.items && Array.isArray(cached.items) && cached.items.length >= 8) {
+      saveHeroLS(cached.items);
       const items = cached.items.map((m: any) => normalizeMovieItem(m, (m.source as ApiSource) || 'kkphim'));
       return items;
     }
@@ -765,6 +810,7 @@ export async function getTmdbHeroPopular(): Promise<Movie[]> {
       if (data?.items && Array.isArray(data.items) && data.items.length >= 8) {
         const normalized = data.items.map((m: any) => normalizeMovieItem(m, (m.source as ApiSource) || 'kkphim'));
         saveCacheToFirebase('hero_banner', { items: data.items, lastUpdated: nowTs });
+        saveHeroLS(data.items);
         return normalized;
       }
     }
@@ -786,12 +832,11 @@ export async function getTmdbHeroPopular(): Promise<Movie[]> {
       const resolvedItems: Movie[] = [];
       const usedSlugs = new Set<string>();
 
-      // Batch search top candidates against KKPhim
-      for (const item of candidates.slice(0, 16)) {
-        if (resolvedItems.length >= 10) break;
+      // Batch search top candidates against KKPhim, concurrency 4
+      // (nối tiếp từng phim: 16 x 2.5s = 40s; batch 4: ~10s)
+      const resolveOne = async (item: any): Promise<Movie | null> => {
         const searchQuery = (item.title || item.original_title || '').replace(/\s*\(.*?\)/, '').trim();
-        if (!searchQuery) continue;
-
+        if (!searchQuery) return null;
         try {
           const searchData = await safeFetchJson<{ data?: { items?: any[] }; items?: any[] }>(
             `https://phimapi.com/v1/api/tim-kiem?keyword=${encodeURIComponent(searchQuery)}&limit=10`,
@@ -805,30 +850,39 @@ export async function getTmdbHeroPopular(): Promise<Movie[]> {
             year: item.release_date ? Number(String(item.release_date).slice(0, 4)) : undefined,
             tmdbId: String(item.id),
           });
-          if (found && found.slug && !usedSlugs.has(found.slug)) {
-            usedSlugs.add(found.slug);
-            const tmdbBackdrop = item.backdrop_path ? `https://image.tmdb.org/t/p/original${item.backdrop_path}` : undefined;
-            const tmdbPoster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : undefined;
-
-            resolvedItems.push({
-              name: found.name || item.title,
-              origin_name: found.origin_name || item.original_title || item.title,
-              slug: found.slug,
-              poster_url: tmdbPoster || found.poster_url || found.thumb_url || '',
-              thumb_url: tmdbPoster || found.thumb_url || found.poster_url || '',
-              backdrop_url: tmdbBackdrop || found.thumb_url || undefined,
-              year: found.year || (item.release_date ? Number(item.release_date.slice(0, 4)) : 2024),
-              quality: found.quality || 'FHD',
-              lang: found.lang || 'Vietsub',
-              content: item.overview || found.content || '',
-              type: 'single',
-              status: 'completed',
-              source: 'kkphim',
-              sourceLabel: 'KKPhim',
-              tmdb: { id: String(item.id), type: 'movie', vote_average: item.vote_average },
-            });
+          if (!found || !found.slug || usedSlugs.has(found.slug)) return null;
+          const tmdbBackdrop = item.backdrop_path ? `https://image.tmdb.org/t/p/original${item.backdrop_path}` : undefined;
+          const tmdbPoster = item.poster_path ? `https://image.tmdb.org/t/p/w500${item.poster_path}` : undefined;
+          return {
+            name: found.name || item.title,
+            origin_name: found.origin_name || item.original_title || item.title,
+            slug: found.slug,
+            poster_url: tmdbPoster || found.poster_url || found.thumb_url || '',
+            thumb_url: tmdbPoster || found.thumb_url || found.poster_url || '',
+            backdrop_url: tmdbBackdrop || found.thumb_url || undefined,
+            year: found.year || (item.release_date ? Number(item.release_date.slice(0, 4)) : 2024),
+            quality: found.quality || 'FHD',
+            lang: found.lang || 'Vietsub',
+            content: item.overview || found.content || '',
+            type: 'single',
+            status: 'completed',
+            source: 'kkphim',
+            sourceLabel: 'KKPhim',
+            tmdb: { id: String(item.id), type: 'movie', vote_average: item.vote_average },
+          } as Movie;
+        } catch {
+          return null;
+        }
+      };
+      const queue = candidates.slice(0, 16);
+      for (let i = 0; i < queue.length && resolvedItems.length < 10; i += 4) {
+        const batch = await Promise.all(queue.slice(i, i + 4).map(resolveOne));
+        for (const m of batch) {
+          if (m && resolvedItems.length < 10 && !usedSlugs.has(m.slug)) {
+            usedSlugs.add(m.slug);
+            resolvedItems.push(m);
           }
-        } catch {}
+        }
       }
 
       // If resolved at least 6 movies, fill up with seed movies
@@ -841,6 +895,7 @@ export async function getTmdbHeroPopular(): Promise<Movie[]> {
           }
         }
         saveCacheToFirebase('hero_banner', { items: resolvedItems, lastUpdated: nowTs });
+        saveHeroLS(resolvedItems);
         return resolvedItems;
       }
     }
@@ -849,6 +904,7 @@ export async function getTmdbHeroPopular(): Promise<Movie[]> {
   // 4. Ultimate Fallback: High Quality Pre-curated Seed List (all movies -> type movie avoids tv 404)
   const fallbackList = SEED_HERO_POPULAR.map((m) => normalizeMovieItem({ ...(m as any), tmdb: { ...((m as any).tmdb || {}), type: 'movie' } }, 'kkphim'));
   saveCacheToFirebase('hero_banner', { items: fallbackList, lastUpdated: nowTs });
+  saveHeroLS(SEED_HERO_POPULAR as any);
   return fallbackList;
 }
 
@@ -965,19 +1021,29 @@ class ClientLRUCache<K, V> {
 const cache = new ClientLRUCache<string, any>(300);
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
+const inflight = new Map<string, Promise<any>>();
 async function cachedFetch<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
   const cached = cache.get(key, CACHE_TTL);
   if (cached !== null) {
     return cached;
   }
-  try {
-    const result = await fetcher();
-    cache.set(key, result);
-    return result;
-  } catch (err) {
-    // If cache had stale data, we can fallback, otherwise rethrow or return empty
-    throw err;
-  }
+  // Dedupe: nhiều gọi cùng key 1 lúc (home + trending...) chỉ fetch 1 lần
+  const running = inflight.get(key);
+  if (running) return running as Promise<T>;
+  const p = (async () => {
+    try {
+      const result = await fetcher();
+      cache.set(key, result);
+      return result;
+    } catch (err) {
+      // If cache had stale data, we can fallback, otherwise rethrow or return empty
+      throw err;
+    } finally {
+      if (inflight.get(key) === p) inflight.delete(key);
+    }
+  })();
+  inflight.set(key, p);
+  return p;
 }
 
 // Base Fetcher for each source with safe error catching — respects admin disable toggle
@@ -1639,36 +1705,44 @@ export const movieApi = {
   },
 
   // 9. Top Trending (Movies with most views) - ưu tiên view cao + năm mới như chophim
+  /** Xếp top theo lượt xem (dùng chung cho trending + các hàng). */
+  sortByPopularity(items: Movie[], limit: number): Movie[] {
+    const uniqueItems = items.filter((m, index, self) => self.findIndex(t => t.slug === m.slug) === index);
+    const sorted = [...uniqueItems].sort((a, b) => {
+      const viewDiff = (b.view || 0) - (a.view || 0);
+      if (viewDiff !== 0) return viewDiff;
+      if ((b as any).chieurap && !(a as any).chieurap) return 1;
+      if ((a as any).chieurap && !(b as any).chieurap) return -1;
+      const yearDiff = (b.year || 0) - (a.year || 0);
+      if (yearDiff !== 0) return yearDiff;
+      return 0;
+    });
+    return sorted.slice(0, limit);
+  },
+
   async getTrending(limit = 10, type?: 'series' | 'single'): Promise<MovieListResponse> {
     const source = getActiveApiSource();
     const cacheKey = `trending:${source}:${limit}:${type || 'all'}`;
 
     return cachedFetch(cacheKey, async () => {
-      let p1: any, p2: any, p3: any;
+      // TÁI DÙNG cache của getSeries/getSingleMovies/getNewUpdated (home đã fetch):
+      // chỉ lấy top theo view, không fetch 3 trang riêng nữa.
+      const collect = (v: any): Movie[] => (v && v.items && v.items.length ? v.items : []);
+      let items: Movie[] = [];
       if (type === 'series') {
-        [p1, p2, p3] = await Promise.allSettled([
-          this.getSeries(1, 24),
-          this.getSeries(2, 24),
-          this.getSeries(3, 24),
-        ]);
+        const res = await this.getSeries(1, 24).catch(() => null);
+        items = collect(res);
       } else if (type === 'single') {
-        [p1, p2, p3] = await Promise.allSettled([
-          this.getSingleMovies(1, 24),
-          this.getSingleMovies(2, 24),
-          this.getSingleMovies(3, 24),
-        ]);
+        const res = await this.getSingleMovies(1, 24).catch(() => null);
+        items = collect(res);
       } else {
-        [p1, p2, p3] = await Promise.allSettled([
+        const [nu, th] = await Promise.allSettled([
           this.getNewUpdated(1, 24),
-          this.getNewUpdated(2, 24),
           this.getTheaterMovies(1, 12),
         ]);
+        if (nu.status === 'fulfilled') items = [...items, ...collect(nu.value)];
+        if (th.status === 'fulfilled') items = [...items, ...collect(th.value)];
       }
-      
-      let items: Movie[] = [];
-      if (p1.status === 'fulfilled' && p1.value?.items) items = [...items, ...p1.value.items];
-      if (p2.status === 'fulfilled' && p2.value?.items) items = [...items, ...p2.value.items];
-      if (p3.status === 'fulfilled' && p3.value?.items) items = [...items, ...p3.value.items];
 
       if (items.length === 0) {
         const fallback = await this.getNewUpdated(1, limit + 4).catch(() => null);
@@ -1678,19 +1752,9 @@ export const movieApi = {
         return { status: false, items: [] };
       }
 
-      const uniqueItems = items.filter((m, index, self) => self.findIndex(t => t.slug === m.slug) === index);
-      const sorted = [...uniqueItems].sort((a, b) => {
-        const viewDiff = (b.view || 0) - (a.view || 0);
-        if (viewDiff !== 0) return viewDiff;
-        if ((b as any).chieurap && !(a as any).chieurap) return 1;
-        if ((a as any).chieurap && !(b as any).chieurap) return -1;
-        const yearDiff = (b.year || 0) - (a.year || 0);
-        if (yearDiff !== 0) return yearDiff;
-        return 0;
-      });
       return {
         status: true,
-        items: sorted.slice(0, limit),
+        items: this.sortByPopularity(items, limit),
       };
     });
   },
@@ -1752,123 +1816,107 @@ export const movieApi = {
     });
   },
 
-  // 11. Chi tiết phim + Danh sách tập (Hỗ trợ đổi nguồn & gộp Server phát)
+  // 11. Chi tiết phim + Danh sách tập (Hỗ trợ đổi nguồn & gộp Server phát).
+  // Race các nguồn, thằng nào PLAYABLE trước (có tập + link m3u8) thì thắng —
+  // không phải thằng HTTP về trước. Enrich TMDB tách ra cho caller tự làm nền
+  // (MovieDetailModal đã gọi getTmdbAssets riêng) để khỏi chặn render modal.
+  parseDetailData(data: any, detectedSource: ApiSource): { movie: Movie; episodes: EpisodeServer[]; msg: string } | null {
+    if (!data || (!data.status && !data.movie)) return null;
+    const rawMovie = data.movie || data;
+    if (!rawMovie || typeof rawMovie !== 'object') return null;
+    const movie = normalizeMovieItem(rawMovie, detectedSource);
+    const rawEpisodes = data.episodes || rawMovie.episodes || [];
+    let episodes: EpisodeServer[] = Array.isArray(rawEpisodes)
+      ? rawEpisodes.map((s: any) => {
+          const serverName = s.server_name || s.name || 'Server Vietsub';
+          const items = s.server_data || s.items || [];
+          return {
+            server_name: serverName,
+            source: detectedSource,
+            server_data: Array.isArray(items)
+              ? items.map((ep: any) => ({
+                  name: String(ep.name || ep.episode_name || '1'),
+                  slug: String(ep.slug || ep.episode_slug || ep.name || '1'),
+                  filename: ep.filename || movie.name,
+                  link_embed: ep.link_embed || ep.embed || '',
+                  link_m3u8: ep.link_m3u8 || ep.m3u8 || ep.link_embed || '',
+                }))
+              : [],
+          };
+        })
+      : [];
+    // Sort: TM (thuyết minh sạch) > SN (song ngữ) > LT > PD (thường dính watermark/qc)
+    const score = (name: string) => {
+      const n = String(name || '').toLowerCase();
+      if (n.includes('tm') || n.includes('thuyet minh')) return 0;
+      if (n.includes('sn') || n.includes('song ngu')) return 1;
+      if (n.includes('lt') || n.includes('long tieng')) return 2;
+      if (n.includes('pd') || n.includes('phu de')) return 3;
+      if (n.includes('vietsub')) return 4;
+      return 5;
+    };
+    episodes = episodes.sort((a, b) => score(a.server_name) - score(b.server_name));
+    return { movie: { ...movie, episodes }, episodes, msg: data.msg || 'done' };
+  },
+
+  hasPlayableEpisodes(episodes: EpisodeServer[]): boolean {
+    try {
+      return episodes.some((s) =>
+        (s.server_data || []).some((ep) => !!(ep.link_m3u8 || ep.link_embed)),
+      );
+    } catch {
+      return false;
+    }
+  },
+
   async getMovieDetail(slug: string, preferredSource?: ApiSource): Promise<MovieDetailResponse> {
     if (!slug) throw new Error('Mã phim không hợp lệ');
     const cacheKey = `detail:${slug}:${preferredSource || 'any'}`;
 
     return cachedFetch(cacheKey, async () => {
-      let data: any = null;
-      let detectedSource: ApiSource = preferredSource || 'kkphim';
-
-      // 1. Try KKPhim first
-      if (!preferredSource || preferredSource === 'kkphim' || preferredSource === 'all') {
+      type Src = ApiSource | 'proxy';
+      const sources: Src[] =
+        preferredSource && preferredSource !== 'all'
+          ? [preferredSource]
+          : (['kkphim', 'ophim', 'nguonc'] as ApiSource[]);
+      const fetchOne = async (src: Src): Promise<any> => {
         try {
-          data = await fetchKKPhim<any>(`phim/${slug}`);
-          if (data && (data.status === true || data.movie)) {
-            detectedSource = 'kkphim';
-          }
-        } catch {}
-      }
-
-      // 2. Try OPhim if KKPhim didn't return
-      if ((!data || !data.movie) && (!preferredSource || preferredSource === 'ophim' || preferredSource === 'all')) {
-        try {
-          data = await fetchOPhim<any>(`phim/${slug}`);
-          if (data && (data.status === true || data.movie)) {
-            detectedSource = 'ophim';
-          }
-        } catch {}
-      }
-
-      // 3. Try NguonC if still not found
-      if ((!data || !data.movie) && (!preferredSource || preferredSource === 'nguonc' || preferredSource === 'all')) {
-        try {
-          data = await fetchNguonC<any>(`film/${slug}`);
-          if (data && (data.status === 'success' || data.movie)) {
-            detectedSource = 'nguonc';
-          }
-        } catch {}
-      }
-
-      // 4. General fallback proxy if still not found
-      if (!data || !data.movie) {
-        try {
+          if (src === 'kkphim') return await fetchKKPhim<any>(`phim/${slug}`);
+          if (src === 'ophim') return await fetchOPhim<any>(`phim/${slug}`);
+          if (src === 'nguonc') return await fetchNguonC<any>(`film/${slug}`);
           const res = await fetch(getFullApiUrl(`/api/proxy/movie/phim/${slug}`));
-          if (res.ok) data = await res.json();
+          if (res.ok) return await res.json();
         } catch {}
-      }
-
-      if (!data || (!data.status && !data.movie)) {
-        throw new Error('Không thể tải thông tin chi tiết phim từ các nguồn Vietsub');
-      }
-
-      const rawMovie = data.movie || data;
-      const movie = normalizeMovieItem(rawMovie, detectedSource);
-
-      // Parse episodes - prioritize clean servers (TM/SN > PD) to avoid burnt-in ads
-      const rawEpisodes = data.episodes || rawMovie.episodes || [];
-      let episodes: EpisodeServer[] = Array.isArray(rawEpisodes)
-        ? rawEpisodes.map((s: any) => {
-            const serverName = s.server_name || s.name || 'Server Vietsub';
-            const items = s.server_data || s.items || [];
-            return {
-              server_name: serverName,
-              source: detectedSource,
-              server_data: Array.isArray(items)
-                ? items.map((ep: any) => ({
-                    name: String(ep.name || ep.episode_name || '1'),
-                    slug: String(ep.slug || ep.episode_slug || ep.name || '1'),
-                    filename: ep.filename || movie.name,
-                    link_embed: ep.link_embed || ep.embed || '',
-                    link_m3u8: ep.link_m3u8 || ep.m3u8 || ep.link_embed || '',
-                  }))
-                : [],
-            };
-          })
-        : [];
-      // Sort: TM (thuyết minh sạch) > SN (song ngữ) > LT > PD (thường dính watermark/qc)
-      const score = (name: string) => {
-        const n = name.toLowerCase();
-        if (n.includes('tm') || n.includes('thuyet minh')) return 0;
-        if (n.includes('sn') || n.includes('song ngu')) return 1;
-        if (n.includes('lt') || n.includes('long tieng')) return 2;
-        if (n.includes('pd') || n.includes('phu de')) return 3;
-        if (n.includes('vietsub')) return 4;
-        return 5;
+        return null;
       };
-      episodes = episodes.sort((a,b)=> score(a.server_name) - score(b.server_name));
-
-      // Enrich movie with TMDB backdrop & logo if tmdb ID exists
-      const tmdbId = rawMovie.tmdb?.id || (rawMovie as any).tmdb_id;
-      const tmdbType = rawMovie.tmdb?.type || rawMovie.type;
-      if (tmdbId && /^\d+$/.test(String(tmdbId).trim())) {
-        try {
-          const assets = await getTmdbAssets(String(tmdbId).trim(), tmdbType);
-          if (assets.backdropUrl) {
-            movie.backdrop_url = assets.backdropUrl;
-            if (!movie.backdrops || movie.backdrops.length === 0) {
-              movie.backdrops = [{ url: assets.backdropUrl, primary: true }];
-            }
-          }
-          if (assets.logoUrl && !movie.logo_url) {
-            movie.logo_url = assets.logoUrl;
-            if (!movie.logos || movie.logos.length === 0) {
-              movie.logos = [{ url: assets.logoUrl, primary: true }];
-            }
-          }
-        } catch {}
+      // Race: nguồn nào PLAYABLE trước thì thắng; giữ lại nguồn đầu có movie
+      // để fallback nếu không thằng nào playable.
+      const pending = new Map<number, Promise<{ i: number; data: any }>>();
+      const allSources: Src[] = [...sources, 'proxy'];
+      allSources.forEach((src, i) => {
+        pending.set(
+          i,
+          fetchOne(src)
+            .then((data) => ({ i, data }))
+            .catch(() => ({ i, data: null })),
+        );
+      });
+      let fallback: { movie: Movie; episodes: EpisodeServer[]; msg: string } | null = null;
+      while (pending.size > 0) {
+        const { i, data } = await Promise.race(pending.values());
+        pending.delete(i);
+        const src = allSources[i];
+        const parsed = this.parseDetailData(data, (src === 'proxy' ? 'kkphim' : src) as ApiSource);
+        if (!parsed) continue;
+        if (this.hasPlayableEpisodes(parsed.episodes)) {
+          return { status: true, msg: parsed.msg, movie: parsed.movie, episodes: parsed.episodes };
+        }
+        if (!fallback) fallback = parsed;
       }
-
-      return {
-        status: true,
-        msg: data.msg || 'done',
-        movie: {
-          ...movie,
-          episodes,
-        },
-        episodes,
-      };
+      if (fallback) {
+        return { status: true, msg: fallback.msg, movie: fallback.movie, episodes: fallback.episodes };
+      }
+      throw new Error('Không thể tải thông tin chi tiết phim từ các nguồn Vietsub');
     });
   },
 

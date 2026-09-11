@@ -3,7 +3,7 @@
 // (báo hover được / cắm chuột) bị rớt khỏi tv-mode.
 
 const TV_UA_RE =
-  /googletv|smarttv|smart-tv|smartcast|appletv|appletv\+|hbbtv|pov_tv|netcast|web0s|tizen|roku|viera|bravia|aftt|aftm|aftb|firetv|leanback|ouya|nvidia shield|mi tv|mitv|android tv|vidaa|crkey|opera tv|opera-tv|shieldtv|tv box/i;
+  /googletv|smarttv|smart[ -]?tv|smartcast|appletv|appletv\+|hbbtv|pov_tv|netcast|web0s|tizen|roku|viera|bravia|aftt|aftm|aftb|firetv|leanback|ouya|nvidia shield|mi tv|mitv|android tv|tcl|hisense|vidaa|crkey|opera tv|opera-tv|shieldtv|tv box/i;
 
 const TV_FORCE_KEY = 'gau_tv_mode'; // localStorage: '1' | '0'
 
@@ -74,8 +74,126 @@ export function isTvDevice(): boolean {
     // hover:none): màn đủ lớn + không có fine pointer thì chắc chắn là TV.
     // (Case này trước đây miss nên cài lên TV thật vẫn chạy giao diện web.)
     if (w >= 960 && !canHover && !fine) return true;
+    // Lưới cuối: thiết bị KHÔNG có màn cảm ứng + không có chuột fine +
+    // màn rộng (WebView trên TV box thường báo hover/coarse kiểu desktop).
+    // Desktop chuột thật luôn có fine -> loại; phone/tablet luôn có cảm ứng -> loại.
+    let hasTouch = false;
+    try {
+      hasTouch =
+        'ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0;
+    } catch {}
+    if (!hasTouch && !fine && w >= 800) return true;
+    // APK native cài trên TV box không cảm ứng -> chắc chắn là TV.
+    try {
+      const cap = (window as any)?.Capacitor;
+      if (cap?.isNativePlatform?.() && !hasTouch) return true;
+    } catch {}
   } catch {}
   return false;
+}
+
+export interface TvDiagnosis {
+  ua: string;
+  w: number;
+  h: number;
+  dpr: number;
+  canHover: boolean | null;
+  coarse: boolean | null;
+  fine: boolean | null;
+  urlOv: boolean | null;
+  storedOv: boolean | null;
+  uaMatch: boolean;
+  /** rule nào đã match: 'override-url' | 'override-stored' | 'ua' | 'r1' | 'r2' | 'r3' | 'r4' | null */
+  matchedRule: string | null;
+  result: boolean;
+  tvClassApplied: boolean;
+}
+
+/** Chẩn đoán chi tiết vì sao TV vào/không vào tv-mode (dùng cho panel ?tvdebug=1). */
+export function diagnoseTv(): TvDiagnosis {
+  const d: TvDiagnosis = {
+    ua: '',
+    w: 0,
+    h: 0,
+    dpr: 1,
+    canHover: null,
+    coarse: null,
+    fine: null,
+    urlOv: null,
+    storedOv: null,
+    uaMatch: false,
+    matchedRule: null,
+    result: false,
+    tvClassApplied: false,
+  };
+  try {
+    d.ua = navigator.userAgent || '';
+  } catch {}
+  try {
+    d.w = window.innerWidth || 0;
+    d.h = window.innerHeight || 0;
+    d.dpr = window.devicePixelRatio || 1;
+  } catch {}
+  try {
+    d.canHover = window.matchMedia('(hover: hover)').matches;
+    d.coarse = window.matchMedia('(pointer: coarse)').matches;
+    d.fine = window.matchMedia('(pointer: fine)').matches;
+  } catch {}
+  d.urlOv = getUrlOverride();
+  d.storedOv = getStoredOverride();
+  try {
+    d.uaMatch = TV_UA_RE.test(d.ua);
+  } catch {}
+  if (d.urlOv !== null) {
+    d.matchedRule = 'override-url';
+    d.result = d.urlOv;
+  } else if (d.storedOv !== null) {
+    d.matchedRule = 'override-stored';
+    d.result = d.storedOv;
+  } else if (d.uaMatch) {
+    d.matchedRule = 'ua';
+    d.result = true;
+  } else {
+    const w = d.w;
+    const canHover = d.canHover === true;
+    const coarse = d.coarse === true;
+    const fine = d.fine === true;
+    if (w >= 1920 && !canHover) {
+      d.matchedRule = 'r1';
+      d.result = true;
+    } else if (w >= 1280 && !canHover && coarse) {
+      d.matchedRule = 'r2';
+      d.result = true;
+    } else if (w >= 1024 && coarse && !fine) {
+      d.matchedRule = 'r3';
+      d.result = true;
+    } else if (w >= 960 && !canHover && !fine) {
+      d.matchedRule = 'r4';
+      d.result = true;
+    } else {
+      let hasTouch = false;
+      try {
+        hasTouch =
+          'ontouchstart' in window || (navigator.maxTouchPoints || 0) > 0;
+      } catch {}
+      if (!hasTouch && !fine && w >= 800) {
+        d.matchedRule = 'r5-no-touch';
+        d.result = true;
+      } else {
+        try {
+          const cap = (window as any)?.Capacitor;
+          if (cap?.isNativePlatform?.() && !hasTouch) {
+            d.matchedRule = 'r6-native-tv';
+            d.result = true;
+          }
+        } catch {}
+      }
+    }
+  }
+  try {
+    d.tvClassApplied = document.documentElement.classList.contains('tv-mode');
+  } catch {}
+  return d;
 }
 
 export function applyTvClass() {

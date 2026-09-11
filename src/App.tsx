@@ -62,6 +62,7 @@ import { useTvMode } from "./hooks/useTvMode";
 import { App as CapApp } from "@capacitor/app";
 import { appNavigate } from "./routerNav";
 import { RouteSync } from "./components/RouteSync";
+import { TvDebugPanel } from "./components/TvDebugPanel";
 import {
   buildTabUrl,
   buildPhimUrl,
@@ -359,6 +360,9 @@ export default function App() {
     netflixTop10TV: [],
   });
   const [isLoadingHome, setIsLoadingHome] = useState<boolean>(true);
+  // Mọi đợt fetch home đã xong (kể cả lỗi) -> hàng nào vẫn rỗng thì ẩn hẳn,
+  // không vẽ skeleton nữa
+  const [homeSettled, setHomeSettled] = useState<boolean>(false);
   const [heroTmdbMovies, setHeroTmdbMovies] = useState<Movie[]>([]);
 
   const setMovieCollection = (key: string, value: Movie[]) => {
@@ -619,15 +623,18 @@ export default function App() {
       );
   }, []);
 
-  // Auto check tập mới khi vào app và mỗi 5 phút (chỉ khi có theo dõi)
+  // Auto check tập mới khi vào app và mỗi 30 phút (chỉ khi có theo dõi,
+  // không check lúc đang xem phim để khỏi tranh băng thông với video)
   const handleCheckFollowUpdates = useCallback(async () => {
     if (!currentAccount || !activeProfile || isCheckingFollow) return;
+    if (playingMovie) return;
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     const list = followMovieService.getAll(currentAccount.id, activeProfile.id);
     if (list.length === 0) return;
-    // tránh spam: chỉ check nếu lần cuối >5p
+    // tránh spam: chỉ check nếu lần cuối >30p
     const newestCheck = Math.max(...list.map((m) => m.lastCheckedAt || 0));
     if (
-      Date.now() - newestCheck < 5 * 60 * 1000 &&
+      Date.now() - newestCheck < 30 * 60 * 1000 &&
       list.some((m) => !m.hasNewEpisode)
     )
       return;
@@ -645,12 +652,20 @@ export default function App() {
     } finally {
       setIsCheckingFollow(false);
     }
-  }, [currentAccount?.id, activeProfile?.id, isCheckingFollow]);
+  }, [currentAccount?.id, activeProfile?.id, isCheckingFollow, playingMovie]);
 
   useEffect(() => {
     handleCheckFollowUpdates();
-    const id = setInterval(handleCheckFollowUpdates, 5 * 60 * 1000);
-    return () => clearInterval(id);
+    const id = setInterval(handleCheckFollowUpdates, 30 * 60 * 1000);
+    // App quay lại foreground thì check 1 phát (thay vì poll mù)
+    const onVis = () => {
+      if (document.visibilityState === 'visible') handleCheckFollowUpdates();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener('visibilitychange', onVis);
+    };
   }, [handleCheckFollowUpdates]);
 
   // Khi xem xong 1 phim có theo dõi thì đánh dấu đã xem (clear badge)
@@ -816,6 +831,7 @@ export default function App() {
   // Fetch Home collections with Progressive 2-Stage Loading for maximum speed
   const fetchHomeData = useCallback(async () => {
     setIsLoadingHome(true);
+    setHomeSettled(false);
     try {
       // Stage 1 (Above the fold): Tải song song những mục hiển thị ngay trên màn hình đầu
       const [newRes, trendingAllRes, netflixTop10Res] = await Promise.all([
@@ -854,72 +870,69 @@ export default function App() {
       // Màn hình đầu đã sẵn sàng -> Tắt ngay loading để người dùng tương tác tức thì
       setIsLoadingHome(false);
 
-      // Stage 2 (Progressive below the fold): Tải các hàng phim bên dưới
-      const [
-        topSeriesRes,
-        topSingleRes,
-        theaterRes,
-        seriesRes,
-        singleRes,
-        animeRes,
-        actionRes,
-        romanceRes,
-        horrorRes,
-        sciFiRes,
-        koreanRes,
-      ] = await Promise.allSettled([
-        movieApi.getTrending(10, "series"),
-        movieApi.getTrending(10, "single"),
-        movieApi.getTheaterMovies(1, 10),
+      // Stage 2 (dưới fold): chia 3 đợt theo thứ tự hiển thị để box yếu
+      // đỡ nghẽn mạng + hàng hiện dần từ trên xuống (D-pad đi tới đâu có tới đó)
+      const takeItems = (r: PromiseSettledResult<any>): any[] =>
+        r.status === "fulfilled" && r.value?.items?.length ? r.value.items : [];
+      const [topSeriesRes, topSingleRes, animeRes, koreanRes] =
+        await Promise.allSettled([
+          movieApi.getTrending(10, "series"),
+          movieApi.getTrending(10, "single"),
+          movieApi.getAnime(1, 16),
+          movieApi.getByCountry("han-quoc", 1, 16),
+        ]);
+      const topSeriesItems = takeItems(topSeriesRes);
+      if (topSeriesItems.length) setMovieCollection("topSeries", topSeriesItems);
+      const topSingleItems = takeItems(topSingleRes);
+      if (topSingleItems.length) setMovieCollection("topSingle", topSingleItems);
+      const animeItems = takeItems(animeRes);
+      if (animeItems.length) setMovieCollection("animeList", animeItems);
+      const koreanItems = takeItems(koreanRes);
+      if (koreanItems.length) setMovieCollection("koreanList", koreanItems);
+
+      // (newUpdated đã load ở stage 1, khỏi fetch lại để đỡ 1 request)
+      const [seriesRes, singleRes, theaterRes] = await Promise.allSettled([
         movieApi.getSeries(1, 24),
         movieApi.getSingleMovies(1, 24),
-        movieApi.getAnime(1, 16),
-        movieApi.getByGenre("hanh-dong", 1, 16),
-        movieApi.getByGenre("tinh-cam", 1, 16),
-        movieApi.getByGenre("kinh-di", 1, 16),
-        movieApi.getByGenre("vien-tuong", 1, 16),
-        movieApi.getByCountry("han-quoc", 1, 16),
+        movieApi.getTheaterMovies(1, 10),
       ]);
+      const seriesItems = takeItems(seriesRes);
+      if (seriesItems.length) {
+        setMovieCollection(
+          "seriesList",
+          seriesItems.length > 10 ? seriesItems.slice(10) : seriesItems,
+        );
+      }
+      const singleItems = takeItems(singleRes);
+      if (singleItems.length) {
+        setMovieCollection(
+          "singleList",
+          singleItems.length > 10 ? singleItems.slice(10) : singleItems,
+        );
+      }
+      const theaterItems = takeItems(theaterRes);
+      if (theaterItems.length) setMovieCollection("theaterList", theaterItems);
 
-      if (topSeriesRes.status === "fulfilled" && topSeriesRes.value?.items?.length) {
-        setMovieCollection("topSeries", topSeriesRes.value.items);
-      }
-      if (topSingleRes.status === "fulfilled" && topSingleRes.value?.items?.length) {
-        setMovieCollection("topSingle", topSingleRes.value.items);
-      }
-      if (theaterRes.status === "fulfilled" && theaterRes.value?.items?.length) {
-        setMovieCollection("theaterList", theaterRes.value.items);
-      }
-      if (seriesRes.status === "fulfilled" && seriesRes.value?.items?.length) {
-        const items = seriesRes.value.items;
-        setMovieCollection("seriesList", items.length > 10 ? items.slice(10) : items);
-      }
-      if (singleRes.status === "fulfilled" && singleRes.value?.items?.length) {
-        const items = singleRes.value.items;
-        setMovieCollection("singleList", items.length > 10 ? items.slice(10) : items);
-      }
-      if (animeRes.status === "fulfilled" && animeRes.value?.items?.length) {
-        setMovieCollection("animeList", animeRes.value.items);
-      }
-      if (actionRes.status === "fulfilled" && actionRes.value?.items?.length) {
-        setMovieCollection("actionList", actionRes.value.items);
-      }
-      if (romanceRes.status === "fulfilled" && romanceRes.value?.items?.length) {
-        setMovieCollection("romanceList", romanceRes.value.items);
-      }
-      if (horrorRes.status === "fulfilled" && horrorRes.value?.items?.length) {
-        setMovieCollection("horrorList", horrorRes.value.items);
-      }
-      if (sciFiRes.status === "fulfilled" && sciFiRes.value?.items?.length) {
-        setMovieCollection("sciFiList", sciFiRes.value.items);
-      }
-      if (koreanRes.status === "fulfilled" && koreanRes.value?.items?.length) {
-        setMovieCollection("koreanList", koreanRes.value.items);
-      }
+      const [actionRes, romanceRes, horrorRes, sciFiRes] =
+        await Promise.allSettled([
+          movieApi.getByGenre("hanh-dong", 1, 16),
+          movieApi.getByGenre("tinh-cam", 1, 16),
+          movieApi.getByGenre("kinh-di", 1, 16),
+          movieApi.getByGenre("vien-tuong", 1, 16),
+        ]);
+      const actionItems = takeItems(actionRes);
+      if (actionItems.length) setMovieCollection("actionList", actionItems);
+      const romanceItems = takeItems(romanceRes);
+      if (romanceItems.length) setMovieCollection("romanceList", romanceItems);
+      const horrorItems = takeItems(horrorRes);
+      if (horrorItems.length) setMovieCollection("horrorList", horrorItems);
+      const sciFiItems = takeItems(sciFiRes);
+      if (sciFiItems.length) setMovieCollection("sciFiList", sciFiItems);
     } catch (e) {
       void 0;
     } finally {
       setIsLoadingHome(false);
+      setHomeSettled(true);
     }
   }, []);
 
@@ -966,6 +979,93 @@ export default function App() {
     setShowAdminDashboard(false);
     showToast(`Chào mừng @${account.username} đến với Gấu Cinema!`);
   };
+
+  // TẠM THỜI cho test TV: ?autologin=username:password tự đăng nhập 1 lần
+  // (khỏi gõ phím bằng remote). Đọc + nuốt param NGAY trong render đầu
+  // (trước khi router/effect con kịp viết lại URL), cất vào sessionStorage
+  // để reload giữa chừng vẫn thử tiếp. XÓA trước khi release.
+  const [pendingAutoLogin] = useState<{ u: string; p: string } | null>(() => {
+    const consume = (value: string | null) => {
+      if (!value) return null;
+      const sep = value.indexOf(':');
+      if (sep <= 0) return null;
+      try {
+        const u = decodeURIComponent(value.slice(0, sep)).trim();
+        const p = decodeURIComponent(value.slice(sep + 1)).trim();
+        if (!u || !p) return null;
+        return { u, p };
+      } catch {
+        return null;
+      }
+    };
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const raw = params.get('autologin');
+      let creds = consume(raw);
+      if (raw) {
+        params.delete('autologin');
+        try {
+          window.history.replaceState(
+            null,
+            '',
+            window.location.pathname + (params.toString() ? `?${params.toString()}` : ''),
+          );
+        } catch {}
+      }
+      if (creds) {
+        try {
+          sessionStorage.setItem('gau_pending_autologin', JSON.stringify(creds));
+        } catch {}
+      } else {
+        try {
+          const saved = sessionStorage.getItem('gau_pending_autologin');
+          if (saved) {
+            const obj = JSON.parse(saved) as any;
+            if (obj && typeof obj.u === 'string' && typeof obj.p === 'string' && obj.u && obj.p) {
+              creds = { u: obj.u, p: obj.p };
+            }
+          }
+        } catch {}
+      }
+      return creds;
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    if (!pendingAutoLogin) return;
+    if (authService.getSessionAccount()) {
+      try {
+        sessionStorage.removeItem('gau_pending_autologin');
+      } catch {}
+      return;
+    }
+    let cancelled = false;
+    showToast(`Đang tự động đăng nhập @${pendingAutoLogin.u}...`);
+    authService
+      .login(pendingAutoLogin.u, pendingAutoLogin.p)
+      .then((account) => {
+        if (cancelled) return;
+        try {
+          sessionStorage.removeItem('gau_pending_autologin');
+        } catch {}
+        handleLoginSuccess(account);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        try {
+          sessionStorage.removeItem('gau_pending_autologin');
+        } catch {}
+        showToast(
+          `Tự động đăng nhập thất bại: ${err?.message || 'lỗi không rõ'}`,
+          'error',
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingAutoLogin]);
 
   const handleLogout = () => {
     if (currentAccount) {
@@ -1235,14 +1335,12 @@ export default function App() {
           } else if (playingMovie || selectedMovieForDetail) {
             // Player/detail đóng theo URL thật (deep-link được) thay vì history.back() mù
             if (playingMovie) {
-              // TV 2 nấc kiểu Netflix: overlay ẩn -> Back chỉ mở overlay; hiện -> mới thoát
+              // TV kiểu Netflix: player tự quyết (menu mở -> đóng menu;
+              // hiện -> ẩn controls; ẩn -> thoát) qua event này
               try {
                 if (document.documentElement.classList.contains("tv-mode")) {
-                  const root = document.getElementById("gau-player-root");
-                  if (root && root.getAttribute("data-controls") === "hidden") {
-                    window.dispatchEvent(new Event("gau_tv_wake_player"));
-                    return;
-                  }
+                  window.dispatchEvent(new Event("gau_tv_back_player"));
+                  return;
                 }
               } catch {}
               navActionsRef.current.closePlayer();
@@ -2259,6 +2357,7 @@ export default function App() {
                         <MovieRow
                           title="Top Phim Hot Nhất Hôm Nay"
                           movies={topHotAll}
+                          pending={!homeSettled}
                           onOpenDetail={(m) => openDetailModal(m)}
                           onSelectMovie={(m) => openDetailModal(m)}
                           onPlay={handlePlayMovie}
@@ -2278,6 +2377,7 @@ export default function App() {
                       <Top10Carousel
                         title="Top 10 Phim Bộ Hôm Nay"
                         movies={topSeries}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
                       />
@@ -2286,6 +2386,7 @@ export default function App() {
                         title="Anime & Hoạt Hình"
                         icon={<Smile className="w-5 h-5 text-emerald-400" />}
                         movies={animeList}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2300,6 +2401,7 @@ export default function App() {
                           <Clapperboard className="w-5 h-5 text-blue-400" />
                         }
                         movies={koreanList}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2312,6 +2414,7 @@ export default function App() {
                         title="Hành Động Đỉnh Cao"
                         icon={<Sword className="w-5 h-5 text-red-400" />}
                         movies={actionList}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2323,6 +2426,7 @@ export default function App() {
                       <Top10Carousel
                         title="Top 10 Phim Lẻ Hôm Nay"
                         movies={topSingle}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
                       />
@@ -2331,6 +2435,7 @@ export default function App() {
                         title="Phim Mới Cập Nhật"
                         icon={<Flame className="w-5 h-5 text-amber-400" />}
                         movies={newUpdated}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2343,6 +2448,7 @@ export default function App() {
                         title="Phim Bộ Hot"
                         icon={<Tv className="w-5 h-5 text-sky-400" />}
                         movies={seriesList}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2355,6 +2461,7 @@ export default function App() {
                         title="Phim Lẻ Đặc Sắc"
                         icon={<Film className="w-5 h-5 text-indigo-400" />}
                         movies={singleList}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2367,6 +2474,7 @@ export default function App() {
                         title="Tình Cảm & Lãng Mạn"
                         icon={<Heart className="w-5 h-5 text-pink-400" />}
                         movies={romanceList}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2379,6 +2487,7 @@ export default function App() {
                         title="Kinh Dị & Bí Ẩn"
                         icon={<Flame className="w-5 h-5 text-purple-400" />}
                         movies={horrorList}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2391,6 +2500,7 @@ export default function App() {
                         title="Viễn Tưởng & Phiêu Lưu"
                         icon={<Sparkles className="w-5 h-5 text-cyan-400" />}
                         movies={sciFiList}
+                        pending={!homeSettled}
                         onOpenDetail={(m) => openDetailModal(m)}
                         onSelectMovie={(m) => openDetailModal(m)}
                         onPlay={handlePlayMovie}
@@ -2403,6 +2513,7 @@ export default function App() {
                         <MovieRow
                           title="Mãn Nhãn Phim Chiếu Rạp"
                           movies={theaterList}
+                          pending={!homeSettled}
                           onOpenDetail={(m) => openDetailModal(m)}
                           onSelectMovie={(m) => openDetailModal(m)}
                           onPlay={handlePlayMovie}
@@ -3005,6 +3116,7 @@ export default function App() {
         type="warning"
       />
       <ToastContainer toasts={toasts} onRemove={() => {}} />
+      <TvDebugPanel />
     </>
   );
 }
