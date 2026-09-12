@@ -205,6 +205,13 @@ video::-webkit-media-controls {
   background-color: rgba(37, 99, 235, 0.4) !important;
   color: #fff !important;
 }
+/* Dialog (Confirm/Custom): 2 nút cùng màu nền, focus = nền đậm/nhạt hơn, KHÔNG outline
+   (đè rule .tv-mode *:focus-visible / 1920px *:focus-visible chỉ riêng nút trong dialog) */
+[role="dialog"] button:focus,
+[role="dialog"] button:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
 /* Lưới an toàn khi tv-mode chưa kịp bật / detect hụt trên TV thật:
    diệt viền vàng mặc định của WebView, thay bằng ring xanh thương hiệu.
    Chuột desktop không bị ảnh hưởng (chuột không kích hoạt :focus-visible). */

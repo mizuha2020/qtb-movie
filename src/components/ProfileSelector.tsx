@@ -16,6 +16,7 @@ import {
   Loader2,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { ConfirmDialog } from './CustomDialog';
 import appLogo from '../assets/images/app_logo.jpg';
 
 interface ProfileSelectorProps {
@@ -43,6 +44,8 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
 }) => {
   const [isManaging, setIsManaging] = useState(false);
   const [editingProfile, setEditingProfile] = useState<UserProfile | null>(null);
+  // Hồ sơ chờ xác nhận xóa (dùng ConfirmDialog thay window.confirm native)
+  const [profileToDelete, setProfileToDelete] = useState<UserProfile | null>(null);
   const [pinPromptProfile, setPinPromptProfile] = useState<UserProfile | null>(null);
   const [enteredPin, setEnteredPin] = useState('');
   const [pinError, setPinError] = useState(false);
@@ -194,16 +197,21 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
     }
   };
 
-  const handleDeleteProfileClick = async (profile: UserProfile) => {
+  const handleDeleteProfileClick = (profile: UserProfile) => {
     if (profile.isPrimary) {
       onShowToast?.('Không thể xóa hồ sơ chính mặc định của tài khoản.', 'error');
       return;
     }
-    if (!window.confirm(`Bạn có chắc chắn muốn xóa hồ sơ "${profile.name}"? Danh sách xem và lịch sử của hồ sơ này sẽ bị xóa vĩnh viễn.`)) {
-      return;
-    }
+    // Mở ConfirmDialog đồng bộ style thay vì window.confirm native (không style được)
+    setProfileToDelete(profile);
+  };
+
+  const confirmDeleteProfile = async () => {
+    if (!profileToDelete) return;
+    const profileId = profileToDelete.id;
+    setProfileToDelete(null);
     try {
-      await onDeleteProfile(profile.id);
+      await onDeleteProfile(profileId);
       setEditingProfile(null);
     } catch (err: any) {
       onShowToast?.(err?.message || 'Không thể xóa hồ sơ', 'error');
@@ -927,6 +935,18 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
           </div>
         )}
       </AnimatePresence>
+
+      {/* --- CONFIRM: XÓA HỒ SƠ (thay window.confirm native để đồng bộ style dialog) --- */}
+      <ConfirmDialog
+        isOpen={!!profileToDelete}
+        onClose={() => setProfileToDelete(null)}
+        onConfirm={confirmDeleteProfile}
+        title="Xóa hồ sơ"
+        message={`Bạn có chắc chắn muốn xóa hồ sơ "${profileToDelete?.name}"? Danh sách xem và lịch sử của hồ sơ này sẽ bị xóa vĩnh viễn.`}
+        confirmText="Xóa"
+        cancelText="Hủy"
+        type="danger"
+      />
     </div>
   );
 };

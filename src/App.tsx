@@ -1064,6 +1064,17 @@ export default function App() {
 
     // Luồng Back chung: dùng cho cả nút Back cứng Android lẫn event
     // "gau_tv_back" (phím Back/Escape của remote TV trên web giả lập/TV box).
+    // Có dialog xác nhận app đang mở (Confirm/Custom — trừ #movie-detail-fullpage
+    // vì nó có luồng Back riêng qua state selectedMovieForDetail)?
+    const hasOpenAppDialog = () => {
+      try {
+        return !!document.querySelector(
+          '[role="dialog"]:not(#movie-detail-fullpage)',
+        );
+      } catch {
+        return false;
+      }
+    };
     const runBackFlow = () => {
       // When not in cinema app, don't show cinema exit popup; livetv handles its own back
       if (activeApp !== "cinema") {
@@ -1087,6 +1098,10 @@ export default function App() {
           navActionsRef.current.closePlayer();
         }
         else navActionsRef.current.closeDetailModal();
+      } else if (hasOpenAppDialog()) {
+        // Dialog xác nhận khác đang mở (vd: xóa hồ sơ trong profile selector):
+        // Back chỉ đóng dialog đó, không đóng cả profile selector.
+        window.dispatchEvent(new Event("gau_dialog_request_close"));
       } else if (
         (showProfileSelector && currentAccount && activeProfile)
       ) {

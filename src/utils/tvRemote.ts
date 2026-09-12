@@ -829,6 +829,14 @@ export function handleTvKey(e: KeyboardEvent): boolean {
     (e as any).keyCode === 10009 ||
     (e as any).keyCode === 461
   ) {
+    // Dialog xác nhận app đang mở (Confirm/Custom — trừ #movie-detail-fullpage
+    // vì nó có luồng Back riêng): Back chỉ đóng dialog, không chạy luồng điều hướng.
+    try {
+      if (document.querySelector('[role="dialog"]:not(#movie-detail-fullpage)')) {
+        window.dispatchEvent(new Event('gau_dialog_request_close'));
+        return true;
+      }
+    } catch {}
     try {
       window.dispatchEvent(new Event('gau_tv_back'));
     } catch {}

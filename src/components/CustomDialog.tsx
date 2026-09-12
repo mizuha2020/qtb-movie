@@ -39,11 +39,15 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
       const onKey = (e: KeyboardEvent) => {
         if (e.key === 'Escape') onClose();
       };
+      // Back cứng Android / phím Back remote TV khi dialog mở: chỉ đóng dialog này
+      const onBackRequest = () => onClose();
       window.addEventListener('keydown', onKey);
+      window.addEventListener('gau_dialog_request_close', onBackRequest);
       return () => {
         document.body.style.overflow = '';
         window.clearTimeout(t);
         window.removeEventListener('keydown', onKey);
+        window.removeEventListener('gau_dialog_request_close', onBackRequest);
       };
     }
     return () => { document.body.style.overflow = ''; };
@@ -76,7 +80,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
             </div>
             {title && <h3 className={`text-lg font-bold text-white ${titleColors[type]}`}>{title}</h3>}
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-700/50 text-slate-400 hover:text-white transition-colors">
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-slate-700/50 focus:bg-slate-600/60 focus:text-white text-slate-400 hover:text-white transition-colors">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -89,7 +93,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
           {showCancel && (
             <button
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-slate-700/50 hover:bg-slate-700 text-slate-300 font-medium text-sm transition-colors"
+              className="px-4 py-2 rounded-xl bg-slate-700/50 hover:bg-slate-600/80 focus:bg-slate-500 focus:text-white text-slate-300 font-medium text-sm transition-colors"
             >
               {cancelText}
             </button>
@@ -97,13 +101,7 @@ export const CustomDialog: React.FC<CustomDialogProps> = ({
           <button
             ref={confirmBtnRef}
             onClick={() => { onConfirm?.(); onClose(); }}
-            className={`px-4 py-2 rounded-xl font-medium text-sm transition-colors ${
-              type === 'error' || type === 'warning'
-                ? 'bg-red-600 hover:bg-red-500 text-white'
-                : type === 'success'
-                ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
-                : 'bg-sky-600 hover:bg-sky-500 text-white'
-            }`}
+            className="px-4 py-2 rounded-xl font-medium text-sm text-white bg-slate-700/50 hover:bg-slate-600/80 focus:bg-slate-500 transition-colors"
           >
             {confirmText}
           </button>
@@ -149,23 +147,21 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
       const onKey = (e: KeyboardEvent) => {
         if (e.key === 'Escape') onClose();
       };
+      // Back cứng Android / phím Back remote TV khi dialog mở: chỉ đóng dialog này
+      const onBackRequest = () => onClose();
       window.addEventListener('keydown', onKey);
+      window.addEventListener('gau_dialog_request_close', onBackRequest);
       return () => {
         document.body.style.overflow = '';
         window.clearTimeout(t);
         window.removeEventListener('keydown', onKey);
+        window.removeEventListener('gau_dialog_request_close', onBackRequest);
       };
     }
     return () => { document.body.style.overflow = ''; };
   }, [isOpen, onClose]);
 
   if (!isOpen) return null;
-
-  const btnColors = {
-    danger: 'bg-red-600 hover:bg-red-500',
-    warning: 'bg-amber-600 hover:bg-amber-500',
-    info: 'bg-sky-600 hover:bg-sky-500',
-  };
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4 animate-in fade-in duration-150">
@@ -179,14 +175,14 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
           <button
             ref={cancelBtnRef}
             onClick={onClose}
-            className="flex-1 py-3 text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-700/30 transition-colors"
+            className="flex-1 py-3 text-sm font-medium text-slate-300 bg-slate-700/40 hover:text-white hover:bg-slate-600/70 focus:bg-slate-500 focus:text-white transition-colors"
           >
             {cancelText}
           </button>
           <div className="w-px bg-slate-700/50" />
           <button
             onClick={() => { onConfirm(); onClose(); }}
-            className={`flex-1 py-3 text-sm font-bold text-white transition-colors ${btnColors[type]}`}
+            className="flex-1 py-3 text-sm font-bold text-white bg-slate-700/40 hover:bg-slate-600/70 focus:bg-slate-500 transition-colors"
           >
             {confirmText}
           </button>
