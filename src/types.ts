@@ -75,7 +75,6 @@ export interface Movie {
   is_copyright?: boolean;
   sub_docquyen?: boolean;
   chieurap?: boolean;
-  trailer_url?: string;
   time?: string;
   episode_current?: string;
   episode_total?: string;

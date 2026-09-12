@@ -609,6 +609,31 @@ export function focusNearest(dir: TvDirection): boolean {
     } catch {}
     // Đang đứng trong dialog/modal: bẫy focus trong cùng dialog,
     // không cho D-pad xuyên ra nền.
+    // Ngoại lệ trang chi tiết TV: hero -> D-pad xuống phải về TẬP 1 của shelf
+    // (xử lý trước trap generic để không rơi vào tập giữa theo vị trí X cũ).
+    try {
+      const inDetail = !!active.closest?.('#movie-detail-fullpage');
+      const inHero = !!(
+        active.closest?.('#detail-hero-tv') ||
+        active.hasAttribute?.('data-tv-ep-first-target')
+      );
+      if (inDetail && inHero && dir === 'down') {
+        const firstEp = document.querySelector<HTMLElement>(
+          '#detail-episodes-tv [data-tv-ep-first]',
+        );
+        if (firstEp) {
+          markProgrammaticFocus();
+          setLastTvMove(`detail-down-to-first-ep from ${describeEl(active)} to ${describeEl(firstEp)}`);
+          try {
+            firstEp.focus({ preventScroll: true } as FocusOptions);
+          } catch {
+            firstEp.focus();
+          }
+          tvScrollIntoView(firstEp);
+          return true;
+        }
+      }
+    } catch {}
     try {
       const dlg = active.closest?.('[role="dialog"]') as HTMLElement | null;
       if (dlg) {
@@ -792,6 +817,22 @@ export function handleTvKey(e: KeyboardEvent): boolean {
       return true;
     }
     return false;
+  }
+  // Nút Back của remote TV: Escape (web giả lập TV/Android TV/box hay gửi) /
+  // GoBack / BrowserBack / Tizen 10009 / LG 461 — NGOÀI player (trong player
+  // thì guard isPlayerOpen() ở trên đã nhường GauPlayer tự xử lý). Bắn event
+  // để App quyết: scroll về đầu trang home hoặc mở popup thoát.
+  if (
+    k === 'Escape' ||
+    k === 'GoBack' ||
+    k === 'BrowserBack' ||
+    (e as any).keyCode === 10009 ||
+    (e as any).keyCode === 461
+  ) {
+    try {
+      window.dispatchEvent(new Event('gau_tv_back'));
+    } catch {}
+    return true;
   }
 
   // Media keys (một số remote gửi thẳng media key thay vì arrow)

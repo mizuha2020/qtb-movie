@@ -283,6 +283,23 @@ video::-webkit-media-controls {
   box-shadow: none !important;
 }
 .tv-mode [data-tv-card] { transition: transform 0.18s ease-out !important; }
+/* Profile selector trên TV: hàng phim chỉ zoom thôi, però card hồ sơ đang chọn
+   phải có viền/outline sáng để user jelas biết nào đang focus (D-pad remote).
+   (Rule generic .tv-mode [data-tv-card]:focus kill outline/box-shadow; ID này củ đặc đầu.) */
+.tv-mode #qtb-profile-selector [data-tv-card]:focus,
+.tv-mode #qtb-profile-selector [data-tv-card]:focus-visible {
+  outline: 3px solid rgba(56, 189, 248, 0.95) !important;
+  outline-offset: 3px !important;
+  box-shadow: 0 0 0 6px rgba(125, 211, 252, 0.28), 0 0 22px rgba(56, 189, 248, 0.55) !important;
+}
+@media (min-width: 1920px) {
+  .tv-mode #qtb-profile-selector [data-tv-card]:focus,
+  .tv-mode #qtb-profile-selector [data-tv-card]:focus-visible {
+    outline: 4px solid #38bdf8 !important;
+    outline-offset: 3px !important;
+    box-shadow: 0 0 0 8px rgba(56, 189, 248, 0.3), 0 0 28px rgba(56, 189, 248, 0.6) !important;
+  }
+}
 /* Khung player/video không bao giờ vẽ viền focus (WebView TV hay vẽ viền vàng mặc định) */
 .tv-mode #gau-player-root:focus, .tv-mode #gau-player-root video:focus,
 .tv-mode #gau-player-root .video-area:focus {

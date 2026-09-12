@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { EpisodeServer, Movie, MovieEpisode, Account, UserProfile } from '../types';
+import { EpisodeServer, Movie, MovieEpisode, Account, UserProfile, WatchHistoryItem } from '../types';
 import { movieApi, getImageUrl, getTmdbAssets, tmdbFetch } from '../services/movieApi';
 import {
   Play,
@@ -10,8 +10,6 @@ import {
   Globe,
   Tv,
   Sparkles,
-  Video,
-  Share2,
   Bookmark,
   Info,
   X,
@@ -27,8 +25,12 @@ import { motion, AnimatePresence } from 'motion/react';
 import DOMPurify from 'dompurify';
 import { offlineMovieService } from '../services/offlineMovieService';
 import { followMovieService } from '../services/followMovieService';
+import { firestoreStorage } from '../services/firestoreStorage';
 import { Capacitor } from '@capacitor/core';
 import { markProgrammaticFocus } from '../utils/tvRemote';
+import { useTvMode } from '../hooks/useTvMode';
+import { TvDetailHero } from './TvDetailHero';
+import { TvEpisodeShelf } from './TvEpisodeShelf';
 
 interface MovieDetailModalProps {
   movie: Movie | null;
@@ -44,34 +46,6 @@ interface MovieDetailModalProps {
   currentAccount?: Account | null;
   activeProfile?: UserProfile | null;
   onShowToast?: (msg: string, type?: 'info' | 'success' | 'error' | 'warning') => void;
-}
-
-// Helper to parse Trailer URL (supports YouTube watch, embed, short links, or direct videos)
-function parseTrailerUrl(url?: string): { type: 'youtube' | 'direct'; videoId?: string; embedUrl?: string; directUrl?: string } | null {
-  if (!url || typeof url !== 'string' || !url.trim()) return null;
-  const trimmed = url.trim();
-
-  // YouTube match regex
-  const ytRegex = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-  const match = trimmed.match(ytRegex);
-
-  if (match && match[1]) {
-    const videoId = match[1];
-    return {
-      type: 'youtube',
-      videoId,
-      embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}`,
-    };
-  }
-
-  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    return {
-      type: 'direct',
-      directUrl: trimmed,
-    };
-  }
-
-  return null;
 }
 
 export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
@@ -96,15 +70,11 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [relatedMovies, setRelatedMovies] = useState<Movie[]>([]);
   const [episodeSearch, setEpisodeSearch] = useState('');
-  const [isCopiedLink, setIsCopiedLink] = useState(false);
 
-  // Trailer states
-  const [showTrailer, setShowTrailer] = useState(false);
   const [isSynopsisExpanded, setIsSynopsisExpanded] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const iframeRef = useRef<HTMLIFrameElement>(null);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const isTv = useTvMode();
 
   // Lock background scroll while modal is open to ensure only 1 scrollbar exists
   useEffect(() => {
@@ -120,20 +90,16 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
     };
   }, []);
 
-  // Close on Escape (closes trailer popup if open, else closes detail modal)
+  // Close on Escape
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (showTrailer) {
-          setShowTrailer(false);
-        } else {
-          onClose();
-        }
+        onClose();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showTrailer, onClose]);
+  }, [onClose]);
 
   // Next episode + full schedule cho phim bộ chưa hoàn thành (giống chophim.app)
   const [nextEpisode, setNextEpisode] = useState<{ episode_number: number; air_date: string; name?: string } | null>(null);
@@ -154,7 +120,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
     let isMounted = true;
     setIsLoading(true);
     setError(null);
-    setShowTrailer(false);
     setNextEpisode(null);
     setSeasonEpisodes([]);
     setShowSchedule(false);
@@ -594,49 +559,60 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
     return full;
   }, [serverEpisodes, seasonEpisodes, currentData?.episode_total, currentData?.name]);
 
-  // Parse trailer url from movie data
-  const trailerInfo = useMemo(() => {
-    return parseTrailerUrl(currentData?.trailer_url);
-  }, [currentData?.trailer_url]);
+  // (Đã bỏ nút sao chép link theo yêu cầu)
 
-  const hasTrailer = Boolean(trailerInfo);
-
-  // Static YouTube embed URL for trailer popup modal
-  const youtubeEmbedUrl = useMemo(() => {
-    if (!trailerInfo || trailerInfo.type !== 'youtube') return '';
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
-    return `${trailerInfo.embedUrl}?autoplay=1&controls=1&rel=0&modestbranding=1&playsinline=1&enablejsapi=1&origin=${origin}`;
-  }, [trailerInfo]);
-
-  // User clicks "Xem Trailer" -> Open centered popup modal
-  const handleUserWatchTrailer = (e?: React.MouseEvent) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
+  // --- Nút "Xem Phim Ngay" 2 state: lần đầu vs đang xem dở ("Xem tiếp Tập X") ---
+  // Đọc lịch sử của profile hiện tại; không login -> luôn state "Xem Phim Ngay".
+  const [resumeEntry, setResumeEntry] = useState<WatchHistoryItem | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentAccount || !activeProfile || !currentData) {
+      setResumeEntry(null);
+      return;
     }
-    setShowTrailer(true);
-  };
+    firestoreStorage
+      .getHistory(currentAccount.id, activeProfile.id)
+      .then((hist) => {
+        if (cancelled) return;
+        const found = (hist || []).find((h) => h.movieSlug === currentData.slug) || null;
+        // Chỉ xem là "đang xem" khi còn tiến độ thật (>10s và chưa xem gần hết >95%)
+        if (found && found.currentTime > 10 && (found.progressPercent || 0) < 95) {
+          setResumeEntry(found);
+        } else {
+          setResumeEntry(null);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setResumeEntry(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentAccount?.id, activeProfile?.id, currentData?.slug]);
 
-  const handleCloseTrailer = (e?: React.MouseEvent) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    setShowTrailer(false);
-  };
+  // Tập resume tương ứng trong danh sách hiện tại (ưu tiên theo episodeSlug,
+  // fallback theo tên tập). Null = phim mới -> nút "Xem Phim Ngay" phát tập 1.
+  const resumeTarget = useMemo(() => {
+    if (!resumeEntry) return null;
+    const list = (allEpisodesForDisplay || []).filter((e) => !(e as any).isSoon);
+    if (!list.length) return null;
+    const bySlug = list.find((e) => e.slug === resumeEntry.episodeSlug);
+    if (bySlug) return { ep: bySlug as MovieEpisode, label: bySlug.name || resumeEntry.episodeName };
+    const byName = list.find(
+      (e) => String(e.name).trim().toLowerCase() === String(resumeEntry.episodeName || '').trim().toLowerCase(),
+    );
+    if (byName) return { ep: byName as MovieEpisode, label: byName.name };
+    // Lịch sử còn nhưng tập đó không còn trong server hiện tại (đổi server...)
+    // -> coi như resume bằng label lịch sử, bấm sẽ mở serverEpisodes[0] + player tự resume.
+    return null;
+  }, [resumeEntry, allEpisodesForDisplay]);
 
-  // Copy share link
-  const handleShareMovie = (e?: React.MouseEvent) => {
-    if (e) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-    if (typeof navigator !== 'undefined' && navigator.clipboard) {
-      navigator.clipboard.writeText(window.location.href);
-      setIsCopiedLink(true);
-      setTimeout(() => setIsCopiedLink(false), 2500);
-    }
-  };
+  const resumeLabel = useMemo(() => {
+    if (!resumeEntry) return null;
+    const raw = resumeTarget?.label || resumeEntry.episodeName || '';
+    const m = String(raw).match(/\d+/);
+    return m ? `Xem tiếp Tập ${parseInt(m[0], 10)}` : 'Xem tiếp';
+  }, [resumeEntry, resumeTarget]);
 
   const filteredEpisodes = useMemo(() => {
     const src = allEpisodesForDisplay as Array<MovieEpisode & { isSoon?: boolean }>;
@@ -648,8 +624,11 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
   const handleStartPlay = async () => {
     if (!currentData) return;
     if (serverEpisodes.length > 0 && currentServer) {
+      // Đang xem dở -> mở đúng tập resume (App tự resume currentTime theo lịch sử);
+      // phim mới -> tập 1 như cũ.
+      const targetEp = (resumeTarget?.ep as MovieEpisode | undefined) || serverEpisodes[0];
       if (onPlayEpisode) {
-        onPlayEpisode(currentData, serverEpisodes[0], currentServer);
+        onPlayEpisode(currentData, targetEp, currentServer);
       } else if (onPlayMovie) {
         onPlayMovie(currentData);
       }
@@ -663,8 +642,22 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
         setFullMovieData(data.movie);
         setEpisodes(data.episodes);
         setSelectedServerIndex(0);
+        const eps = data.episodes[0].server_data as MovieEpisode[];
+        let targetEp = eps[0];
+        if (resumeEntry && !resumeTarget) {
+          // Lịch sử có nhưng server mới fetch chưa map được -> tìm theo slug/tên
+          const bySlug = eps.find((e) => e.slug === resumeEntry.episodeSlug);
+          const byName = eps.find(
+            (e) => String(e.name).trim().toLowerCase() === String(resumeEntry.episodeName || '').trim().toLowerCase(),
+          );
+          if (bySlug || byName) targetEp = (bySlug || byName)!;
+        } else if (resumeTarget) {
+          const again = eps.find((e) => e.slug === (resumeTarget.ep as MovieEpisode).slug)
+            || eps.find((e) => String(e.name) === String((resumeTarget.ep as MovieEpisode).name));
+          if (again) targetEp = again;
+        }
         if (onPlayEpisode) {
-          onPlayEpisode(data.movie || currentData, data.episodes[0].server_data[0], data.episodes[0]);
+          onPlayEpisode(data.movie || currentData, targetEp, data.episodes[0]);
         } else if (onPlayMovie) {
           onPlayMovie(data.movie || currentData);
         }
@@ -677,6 +670,36 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
       setIsLoading(false);
     }
   };
+
+  // TV: khi mở trang chi tiết, ép scroll về đỉnh — tránh WebView giữ scroll cũ
+  // hoặc auto-focus kéo hero trượt lên làm mất tên phim ở top.
+  // (Đặt trước early-return để đúng rules-of-hooks.)
+  useEffect(() => {
+    if (!isTv) return;
+    try {
+      containerRef.current?.scrollTo({ top: 0 });
+    } catch {
+      try {
+        if (containerRef.current) containerRef.current.scrollTop = 0;
+      } catch {}
+    }
+  }, [isTv, movie?.slug]);
+
+  // TV: sau khi load xong chi tiết (layout nở ra), pin lại về đỉnh —
+  // WebView TV thường tự cuộn theo focus khiến hero mất phần top.
+  useEffect(() => {
+    if (!isTv || isLoading) return;
+    const t = window.setTimeout(() => {
+      try {
+        containerRef.current?.scrollTo({ top: 0 });
+      } catch {
+        try {
+          if (containerRef.current) containerRef.current.scrollTop = 0;
+        } catch {}
+      }
+    }, 150);
+    return () => window.clearTimeout(t);
+  }, [isTv, isLoading, movie?.slug]);
 
   if (!movie || !currentData) return null;
 
@@ -714,6 +737,15 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
           } catch {
             target.focus();
           }
+          // WebView TV thường bỏ qua preventScroll và tự cuộn theo focus,
+          // kéo hero trượt lên làm mất tên phim ở top -> pin lại về đỉnh.
+          try {
+            containerRef.current?.scrollTo({ top: 0 });
+          } catch {
+            try {
+              if (containerRef.current) containerRef.current.scrollTop = 0;
+            } catch {}
+          }
           window.clearInterval(timer);
         } else if (tries >= 12) {
           window.clearInterval(timer);
@@ -742,7 +774,8 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
         className="fixed inset-0 z-[60] bg-[#060a14] overflow-y-auto overflow-x-hidden text-white flex flex-col selection:bg-blue-600 selection:text-white overscroll-contain will-change-transform"
         style={{ WebkitOverflowScrolling: 'touch', transformOrigin: 'center center' } as React.CSSProperties}
       >
-        {/* Top-Right Circular Close Button */}
+        {/* Top-Right Circular Close Button — ẩn trên TV (dùng nút Back của remote) */}
+        {!isTv && (
         <button
           id="detail-floating-close-btn"
           onClick={onClose}
@@ -752,6 +785,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
         >
           <X className="w-5 h-5 transition-transform group-hover:rotate-90" />
         </button>
+        )}
 
         {/* Loading overlay - minimalist luxurious, mờ sâu */}
         <AnimatePresence>
@@ -824,7 +858,8 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
           )}
         </AnimatePresence>
 
-        {/* Desktop Full-bleed Hero Stage (Panoramic Backdrop) */}
+        {/* Desktop Full-bleed Hero Stage (Panoramic Backdrop) — TV dùng variant 10-foot riêng bên dưới */}
+        {!isTv && (
         <section
           id="detail-hero-stage"
           className="relative w-full min-h-[calc(env(safe-area-inset-top,0px)+440px)] sm:min-h-[520px] md:min-h-[580px] lg:min-h-[640px] bg-[#060a14] select-none flex flex-col justify-end pt-[env(safe-area-inset-top,24px)] sm:pt-0"
@@ -977,19 +1012,8 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                       className="flex items-center gap-2 bg-gradient-to-r from-blue-600 via-sky-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-6 sm:px-8 py-2.5 sm:py-3.5 rounded-2xl font-bold text-sm sm:text-base shadow-2xl shadow-blue-600/40 transition-transform hover:scale-105 active:scale-95 cursor-pointer"
                     >
                       <Play className="w-4 h-4 sm:w-5 sm:h-5 fill-white" />
-                      <span>Xem Phim Ngay</span>
+                      <span>{resumeLabel ?? 'Xem Phim Ngay'}</span>
                     </button>
- 
-                    {hasTrailer && (
-                      <button
-                        id="hero-open-trailer-btn"
-                        onClick={handleUserWatchTrailer}
-                        className="flex items-center gap-2 bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-white px-4 sm:px-5 py-2.5 sm:py-3.5 rounded-2xl font-bold text-xs sm:text-sm shadow-xl transition-transform hover:scale-105 active:scale-95 cursor-pointer"
-                      >
-                        <Video className="w-4 h-4 text-rose-400" />
-                        <span>Xem Trailer</span>
-                      </button>
-                    )}
  
                     <button
                       id="hero-toggle-list-btn"
@@ -1010,22 +1034,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                           <Bookmark className="w-4 h-4 text-sky-400" />
                           <span>Lưu phim</span>
                         </>
-                      )}
-                    </button>
- 
-                    {/* Share / Copy Link Button next to Save */}
-                    <button
-                      id="hero-share-btn"
-                      onClick={handleShareMovie}
-                      className="relative flex items-center justify-center p-2.5 sm:p-3.5 rounded-2xl bg-slate-900/90 hover:bg-slate-800 border border-slate-700 text-slate-200 hover:text-white transition-all hover:scale-105 active:scale-95 cursor-pointer shadow-xl"
-                      title="Sao chép link phim"
-                      aria-label="Chia sẻ phim"
-                    >
-                      <Share2 className="w-4 h-4 sm:w-5 sm:h-5 text-sky-400" />
-                      {isCopiedLink && (
-                        <span className="absolute -top-9 left-1/2 -translate-x-1/2 whitespace-nowrap bg-blue-600 text-white text-[10px] font-bold px-2.5 py-1 rounded-md shadow-2xl animate-in fade-in z-30">
-                          Đã sao chép link!
-                        </span>
                       )}
                     </button>
  
@@ -1102,21 +1110,11 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                   className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 via-sky-600 to-indigo-600 active:from-blue-500 active:to-indigo-500 text-white py-3 rounded-xl font-bold text-sm shadow-xl shadow-blue-600/35 cursor-pointer active:scale-[0.98] transition-all"
                 >
                   <Play className="w-4 h-4 fill-white" />
-                  <span>Xem Phim Ngay</span>
+                  <span>{resumeLabel ?? 'Xem Phim Ngay'}</span>
                 </button>
 
                 {/* Grid of secondary actions */}
                 <div className="grid grid-cols-2 gap-2.5 w-full">
-                  {hasTrailer && (
-                    <button
-                      onClick={handleUserWatchTrailer}
-                      className="flex items-center justify-center gap-1.5 bg-slate-900 border border-slate-800 text-white py-2.5 rounded-xl font-bold text-xs cursor-pointer active:bg-slate-800 transition-all active:scale-95 duration-150"
-                    >
-                      <Video className="w-3.5 h-3.5 text-rose-400" />
-                      <span>Xem Trailer</span>
-                    </button>
-                  )}
-
                   <button
                     onClick={() => onToggleMyList(currentData)}
                     className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-bold text-xs border cursor-pointer transition-all active:scale-95 duration-150 ${
@@ -1161,24 +1159,11 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                     </button>
                   )}
                 </div>
-
-                {/* "Chia sẻ" as a clean full-width button right below the grid */}
-                <button
-                  onClick={handleShareMovie}
-                  className="relative w-full flex items-center justify-center gap-1.5 py-2.5 bg-slate-900 border border-slate-800 text-slate-200 transition-all rounded-xl cursor-pointer active:bg-slate-800 font-bold text-xs active:scale-95 duration-150"
-                >
-                  <Share2 className="w-3.5 h-3.5 text-sky-400" />
-                  <span>Chia sẻ</span>
-                  {isCopiedLink && (
-                    <span className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap bg-blue-600 text-white text-[9px] font-bold px-2 py-0.5 rounded shadow-xl animate-in fade-in z-30">
-                      Copied!
-                    </span>
-                  )}
-                </button>
               </div>
             </div>
             </div>
           </section>
+        )}
  
         {/* Mobile-Only Premium Hero Section (Disabled in favor of Unified responsive hero) */}
         {false && (
@@ -1287,22 +1272,11 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                 className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 via-sky-600 to-indigo-600 active:from-blue-500 active:to-indigo-500 text-white py-3 rounded-xl font-bold text-sm shadow-xl shadow-blue-600/30 active:scale-[0.98] transition-all cursor-pointer"
               >
                 <Play className="w-4 h-4 fill-white" />
-                <span>Xem Phim Ngay</span>
+                <span>{resumeLabel ?? 'Xem Phim Ngay'}</span>
               </button>
  
               {/* Horizontal Scrollable Row for secondary actions */}
               <div className="flex items-center gap-2 overflow-x-auto pb-1 -mx-4 px-4 scrollbar-none snap-x snap-mandatory">
-                {/* Xem Trailer */}
-                {hasTrailer && (
-                  <button
-                    onClick={handleUserWatchTrailer}
-                    className="flex items-center gap-1.5 bg-slate-900 border border-slate-800/80 text-white px-4 py-2 rounded-xl font-bold text-xs shrink-0 cursor-pointer snap-start active:bg-slate-800"
-                  >
-                    <Video className="w-3.5 h-3.5 text-rose-400" />
-                    <span>Xem Trailer</span>
-                  </button>
-                )}
- 
                 {/* Lưu Phim */}
                 <button
                   onClick={() => onToggleMyList(currentData)}
@@ -1351,104 +1325,48 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                     )}
                   </button>
                 )}
- 
-                {/* Chia Sẻ */}
-                <button
-                  onClick={handleShareMovie}
-                  className="relative flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 border border-slate-800/80 text-slate-200 transition-all cursor-pointer snap-start active:bg-slate-800 shrink-0 font-bold text-xs"
-                >
-                  <Share2 className="w-3.5 h-3.5 text-sky-400" />
-                  <span>Chia sẻ</span>
-                  {isCopiedLink && (
-                    <span className="absolute -top-8 left-1/2 -translate-x-1/2 whitespace-nowrap bg-blue-600 text-white text-[9px] font-bold px-2 py-0.5 rounded shadow-xl animate-in fade-in z-30">
-                      Copied!
-                    </span>
-                  )}
-                </button>
               </div>
             </div>
           </div>
         </section>
         )}
+        {/* TV-10FT-HERO-ANCHOR */}
+        {isTv && currentData && (
+          <TvDetailHero
+            data={currentData}
+            backdropSrc={detailBackdropSrc}
+            fallbackThumb={fallbackThumbSrc}
+            isInList={typeof isInMyList === 'function' ? isInMyList(currentData.slug) : Boolean(isInMyList)}
+            onPlay={handleStartPlay}
+            resumeLabel={resumeLabel}
+            onToggleList={() => {
+              onToggleMyList(currentData);
+              markProgrammaticFocus();
+            }}
+            saveRef={null}
+          />
+        )}
+        {/* TV-HERO-INSERT-HERE */}
 
-        {/* Dedicated Centered Trailer Popup Modal */}
-        <AnimatePresence>
-          {showTrailer && hasTrailer && trailerInfo && (
-            <motion.div
-              id="trailer-modal-backdrop"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.2 }}
-              className="fixed inset-0 z-[80] bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 md:p-8"
-              onClick={handleCloseTrailer}
-            >
-              <motion.div
-                id="trailer-modal-card"
-                initial={{ opacity: 0, scale: 0.95, y: 15 }}
-                animate={{ opacity: 1, scale: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95, y: 15 }}
-                transition={{ duration: 0.2, ease: 'easeOut' }}
-                className="relative w-full max-w-4xl bg-[#090e1a] border border-slate-700/90 rounded-2xl sm:rounded-3xl shadow-2xl overflow-hidden flex flex-col"
-                onClick={(e) => e.stopPropagation()}
-              >
-                {/* Header of Trailer Modal */}
-                <div className="flex items-center justify-between px-4 py-3 sm:px-6 sm:py-3.5 bg-slate-900/95 border-b border-slate-800">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <span className="flex items-center justify-center w-7 h-7 rounded-lg bg-rose-600/20 text-rose-400 border border-rose-500/30 shrink-0">
-                      <Video className="w-4 h-4" />
-                    </span>
-                    <div className="min-w-0">
-                      <h3 className="text-sm sm:text-base font-bold text-white truncate">
-                        Trailer: {currentData.name}
-                      </h3>
-                      {currentData.origin_name && (
-                        <p className="text-xs text-slate-400 truncate hidden sm:block">
-                          {currentData.origin_name}
-                        </p>
-                      )}
-                    </div>
-                  </div>
+        {/* TV-EP-SHELF-ANCHOR */}
+        {isTv && currentData && currentServer && filteredEpisodes.length > 0 && (
+          <TvEpisodeShelf
+            episodes={filteredEpisodes.filter((e) => !(e as any).isSoon)}
+            posterThumb={(currentData.poster_url || currentData.thumb_url) ?? ''}
+            source={(currentData as any).source}
+            onSelect={(ep) => {
+              if (onPlayEpisode) {
+                onPlayEpisode(currentData, ep, currentServer);
+              } else if (onPlayMovie) {
+                onPlayMovie(currentData);
+              }
+            }}
+          />
+        )}
+        
 
-                  <button
-                    id="trailer-modal-close-btn"
-                    onClick={handleCloseTrailer}
-                    className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-slate-800 hover:bg-rose-600 text-slate-300 hover:text-white transition-all cursor-pointer border border-slate-700 hover:border-rose-500 shrink-0"
-                    title="Đóng trailer (Esc)"
-                    aria-label="Đóng trailer"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                {/* Video Stage */}
-                <div className="relative w-full aspect-video bg-black flex items-center justify-center">
-                  {trailerInfo.type === 'youtube' ? (
-                    <iframe
-                      ref={iframeRef}
-                      src={youtubeEmbedUrl}
-                      title={`Trailer ${currentData.name}`}
-                      className="w-full h-full border-0"
-                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                      allowFullScreen
-                    />
-                  ) : (
-                    <video
-                      ref={videoRef}
-                      src={trailerInfo.directUrl}
-                      autoPlay
-                      controls
-                      playsInline
-                      className="w-full h-full object-contain"
-                    />
-                  )}
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Main Content Body - Optimized for Desktop, Tablet, and Mobile */}
+{/* Main Content Body (chi hien tren mobile/PC, TV dung hero + shelf rieng) */}
+        {!isTv && (
         <main className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-8 sm:space-y-10 flex-1">
 
           {/* Details & Metadata Grid */}
@@ -2057,7 +1975,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
           )}
 
           {/* Related Movies Section */}
-          {relatedMovies.length > 0 && (
+          {(relatedMovies.length > 0 && !isTv) && (
             <section id="detail-related-section" className="space-y-4 pt-2 sm:pt-4">
               <div className="flex items-center justify-between">
                 <h3 className="text-base sm:text-xl font-bold text-white flex items-center gap-2">
@@ -2130,6 +2048,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
             </button>
           </footer>
         </main>
+        )}
 
     </motion.div>
   );

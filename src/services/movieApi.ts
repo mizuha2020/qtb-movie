@@ -1198,7 +1198,6 @@ function normalizeMovieItem(raw: any, source: ApiSource = 'kkphim'): Movie {
     is_copyright: raw.is_copyright || false,
     sub_docquyen: raw.sub_docquyen || false,
     chieurap: raw.chieurap || false,
-    trailer_url: raw.trailer_url || '',
     time: raw.time || raw.total_episodes || '',
     episode_current: raw.episode_current || raw.current_episode || (raw.episodes ? `${raw.episodes.length} tập` : 'Full'),
     episode_total: raw.episode_total || '',

@@ -79,6 +79,34 @@ import {
   AlertTriangle,
 } from "lucide-react";
 
+/** Ngưỡng (px) coi như "đang ở đầu trang" – nhỏ hơn/ngang mức này là đã top. */
+const HOME_TOP_THRESHOLD_PX = 8;
+
+/**
+ * Kiểm tra tab trang chủ có đang đứng ở đầu trang không.
+ * Đọc scrollY đúng lúc bấm Back (không phụ thuộc state) để tránh stale.
+ */
+function isHomeAtTop(): boolean {
+  try {
+    if (typeof window === "undefined") return true;
+    const y = window.scrollY || (window as any).pageYOffset || 0;
+    return y <= HOME_TOP_THRESHOLD_PX;
+  } catch {
+    return true;
+  }
+}
+
+/** Cuộn mượt về đầu trang (dùng cho Back khi chưa ở top của trang chủ). */
+function scrollToHomeTop(): void {
+  try {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  } catch {
+    try {
+      window.scrollTo(0, 0);
+    } catch {}
+  }
+}
+
 export default function App() {
   // Apply TV 10-foot class on mount + điều hướng remote D-pad
   useTvRemoteNav();
@@ -1021,13 +1049,57 @@ export default function App() {
           return;
         }
         if (activeTab === "home") {
-          setShowExitConfirmModal(true);
+          // Back khi chưa ở đầu trang -> cuộn lên đầu trước; đã ở đầu mới hỏi thoát
+          if (isHomeAtTop()) {
+            setShowExitConfirmModal(true);
+          } else {
+            scrollToHomeTop();
+          }
         } else {
           setActiveTab("home");
         }
       }
     };
     window.addEventListener("popstate", handlePopState);
+
+    // Luồng Back chung: dùng cho cả nút Back cứng Android lẫn event
+    // "gau_tv_back" (phím Back/Escape của remote TV trên web giả lập/TV box).
+    const runBackFlow = () => {
+      // When not in cinema app, don't show cinema exit popup; livetv handles its own back
+      if (activeApp !== "cinema") {
+        return;
+      }
+      if (showExitConfirmModal) {
+        setShowExitConfirmModal(false);
+      } else if (showLogoutConfirm) {
+        setShowLogoutConfirm(false);
+      } else if (playingMovie || selectedMovieForDetail) {
+        // Player/detail đóng theo URL thật (deep-link được) thay vì history.back() mù
+        if (playingMovie) {
+          // TV kiểu Netflix: player tự quyết (menu mở -> đóng menu;
+          // hiện -> ẩn controls; ẩn -> thoát) qua event này
+          try {
+            if (document.documentElement.classList.contains("tv-mode")) {
+              window.dispatchEvent(new Event("gau_tv_back_player"));
+              return;
+            }
+          } catch {}
+          navActionsRef.current.closePlayer();
+        }
+        else navActionsRef.current.closeDetailModal();
+      } else if (
+        (showProfileSelector && currentAccount && activeProfile)
+      ) {
+        window.history.back();
+      } else if (activeTab !== "home") {
+        navActionsRef.current.goHome();
+      } else if (!isHomeAtTop()) {
+        // Back khi chưa ở đầu trang -> cuộn lên đầu; đã ở đầu mới hỏi thoát
+        scrollToHomeTop();
+      } else {
+        setShowExitConfirmModal(true);
+      }
+    };
 
     // Capacitor Back Button for Android (Safe check for native platform)
     let backUnsub: (() => void) | undefined;
@@ -1036,39 +1108,7 @@ export default function App() {
         typeof window !== "undefined" &&
         (window as any)?.Capacitor?.isNativePlatform?.()
       ) {
-        CapApp.addListener("backButton", () => {
-          // When not in cinema app, don't show cinema exit popup; livetv handles its own back
-          if (activeApp !== "cinema") {
-            return;
-          }
-          if (showExitConfirmModal) {
-            setShowExitConfirmModal(false);
-          } else if (showLogoutConfirm) {
-            setShowLogoutConfirm(false);
-          } else if (playingMovie || selectedMovieForDetail) {
-            // Player/detail đóng theo URL thật (deep-link được) thay vì history.back() mù
-            if (playingMovie) {
-              // TV kiểu Netflix: player tự quyết (menu mở -> đóng menu;
-              // hiện -> ẩn controls; ẩn -> thoát) qua event này
-              try {
-                if (document.documentElement.classList.contains("tv-mode")) {
-                  window.dispatchEvent(new Event("gau_tv_back_player"));
-                  return;
-                }
-              } catch {}
-              navActionsRef.current.closePlayer();
-            }
-            else navActionsRef.current.closeDetailModal();
-          } else if (
-            (showProfileSelector && currentAccount && activeProfile)
-          ) {
-            window.history.back();
-          } else if (activeTab !== "home") {
-            navActionsRef.current.goHome();
-          } else {
-            setShowExitConfirmModal(true);
-          }
-        })
+        CapApp.addListener("backButton", runBackFlow)
           .then((l) => {
             backUnsub = () => l.remove();
           })
@@ -1078,8 +1118,13 @@ export default function App() {
       // Ignore on web browser
     }
 
+    // Phím Back của remote TV (web giả lập TV / TV box): tvRemote bắn event
+    // này khi nhấn Back NGOÀI player — chạy cùng luồng với Back cứng Android.
+    window.addEventListener("gau_tv_back", runBackFlow);
+
     return () => {
       window.removeEventListener("popstate", handlePopState);
+      window.removeEventListener("gau_tv_back", runBackFlow);
       if (backUnsub) backUnsub();
     };
   }, [
