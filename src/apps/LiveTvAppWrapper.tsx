@@ -10,7 +10,6 @@ interface LiveTvAppWrapperProps {
   onSelectProfile: (profile: UserProfile) => void;
   onSwitchApp: (app: 'cinema' | 'livetv' | 'youtube' | 'anime') => void;
   onSwitchProfileScreen: () => void;
-  onOpenAdminDashboard?: () => void;
   onLogout?: () => void;
 }
 
@@ -21,7 +20,6 @@ export const LiveTvAppWrapper: React.FC<LiveTvAppWrapperProps> = ({
   onSelectProfile,
   onSwitchApp,
   onSwitchProfileScreen,
-  onOpenAdminDashboard,
   onLogout
 }) => {
   const [resetKey, setResetKey] = useState(0);
@@ -40,7 +38,6 @@ export const LiveTvAppWrapper: React.FC<LiveTvAppWrapperProps> = ({
         onSelectProfile={onSelectProfile}
         onSwitchApp={onSwitchApp}
         onSwitchProfileScreen={onSwitchProfileScreen}
-        onOpenAdminDashboard={onOpenAdminDashboard}
         onLogout={onLogout}
         onLogoClick={handleLogoClick}
       />
