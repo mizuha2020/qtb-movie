@@ -10,7 +10,6 @@ import {
   UserProfile,
   WatchHistoryItem,
   ActiveApp,
-  RoomListItem,
 } from "./types";
 import { authService } from "./services/authService";
 import { firestoreStorage } from "./services/firestoreStorage";
@@ -20,7 +19,6 @@ import { appConfigService } from "./services/appConfigService";
 import { verifyBackendUrl } from "./services/apiConfig";
 import { useTabScroll } from "./hooks/useTabScroll";
 import { LoginScreen } from "./components/LoginScreen";
-import { AdminDashboard } from "./components/AdminDashboard";
 import { Navbar } from "./components/Navbar";
 import { HeroBanner } from "./components/HeroBanner";
 import { Top10Carousel } from "./components/Top10Carousel";
@@ -35,20 +33,16 @@ import { FilterSection } from "./components/FilterSection";
 import { MyListView } from "./components/MyListView";
 import { HistoryView } from "./components/HistoryView";
 import { OfflineSavedView } from "./components/OfflineSavedView";
-import { MangaAppWrapper } from "./apps/MangaAppWrapper";
 import { LiveTvAppWrapper } from "./apps/LiveTvAppWrapper";
 import { AppSwitcherLoading } from "./components/AppSwitcherLoading";
 import { ProfileSwitchLoader } from "./components/ProfileSwitchLoader";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { NotificationTickerBanner } from "./components/NotificationTickerBanner";
-import { WatchTogetherRoom } from "./components/watch-together/WatchTogetherRoom";
-import { JoinRoomModal } from "./components/watch-together/JoinRoomModal";
 import {
   CustomDialog,
   ConfirmDialog,
   ToastContainer,
 } from "./components/CustomDialog";
-import { watchTogetherService } from "./services/watchTogetherService";
 import { offlineMovieService } from "./services/offlineMovieService";
 import {
   followMovieService,
@@ -83,8 +77,6 @@ import {
   Info,
   Lock,
   AlertTriangle,
-  Users,
-  Loader2,
 } from "lucide-react";
 
 export default function App() {
@@ -104,7 +96,6 @@ export default function App() {
   const [currentAccount, setCurrentAccount] = useState<Account | null>(() =>
     authService.getSessionAccount(),
   );
-  const [showAdminDashboard, setShowAdminDashboard] = useState<boolean>(false);
 
   // App Switcher State
   const [activeApp, setActiveApp] = useState<ActiveApp>(() => {
@@ -112,7 +103,6 @@ export default function App() {
       const savedApp = localStorage.getItem("gau_active_app");
       if (
         savedApp === "cinema" ||
-        savedApp === "manga" ||
         savedApp === "livetv"
       ) {
         return savedApp as ActiveApp;
@@ -176,7 +166,7 @@ export default function App() {
   const [maintenanceCountdown, setMaintenanceCountdown] = useState<number>(0);
 
   useEffect(() => {
-    if (!appConfig || activeApp === "cinema" || showAdminDashboard) {
+    if (!appConfig || activeApp === "cinema") {
       setMaintenanceMessage(null);
       setMaintenanceCountdown(0);
       if (maintenanceTimerRef.current) {
@@ -189,9 +179,7 @@ export default function App() {
     const appState = appConfig[activeApp];
     if (appState && !appState.enabled) {
       const label =
-        activeApp === "manga"
-          ? "Gấu Manga"
-          : activeApp === "livetv"
+        activeApp === "livetv"
           ? "Gấu LiveTV"
           : activeApp;
       setMaintenanceMessage(
@@ -229,7 +217,7 @@ export default function App() {
         maintenanceTimerRef.current = null;
       }
     }
-  }, [appConfig, activeApp, showAdminDashboard]);
+  }, [appConfig, activeApp]);
 
   // Profiles State per logged-in account
   const [profiles, setProfiles] = useState<UserProfile[]>([]);
@@ -255,14 +243,12 @@ export default function App() {
           "cinema",
           "anime",
           "tv-shows",
-          "manga",
           "filter",
           "my-list",
           "history",
           "offline",
           "tv-live",
           "youtube",
-          "xem-chung",
         ];
         const isNative = (() => {
           try {
@@ -284,13 +270,12 @@ export default function App() {
         "cinema",
         "anime",
         "tv-shows",
-        "manga",
         "filter",
         "my-list",
         "history",
         "offline",
         "tv-live",
-        "xem-chung",
+        "youtube",
       ];
       // Nếu web mà saved là offline thì fallback về home (web không hỗ trợ)
       const isNative = (() => {
@@ -428,17 +413,6 @@ export default function App() {
   // Mirror để handler stable (handleSelectEpisode) vẫn biết phim đang phát mà sync URL
   const playingMovieRef = useRef<Movie | null>(null);
 
-  // Watch Together State
-  const [activeRoomId, setActiveRoomId] = useState<string | null>(null);
-  const [activeRoomData, setActiveRoomData] = useState<any>(null);
-  const [activeRoomsForFilm, setActiveRoomsForFilm] = useState<RoomListItem[]>(
-    [],
-  );
-  const [allActiveRooms, setAllActiveRooms] = useState<RoomListItem[]>([]);
-  const [joinRoomTarget, setJoinRoomTarget] = useState<RoomListItem | null>(
-    null,
-  );
-
   // User Profile Data (My List & History scoped to activeProfile)
   const [myList, setMyList] = useState<MyListItem[]>([]);
   const [watchHistory, setWatchHistory] = useState<WatchHistoryItem[]>([]);
@@ -541,7 +515,6 @@ export default function App() {
       setProfiles([]);
       setActiveProfile(null);
       setShowProfileSelector(true);
-      setShowAdminDashboard(false);
     }
   }, [currentAccount, loadAccountProfiles]);
 
@@ -694,152 +667,6 @@ export default function App() {
     [currentAccount, activeProfile],
   );
 
-  // Watch Together - Subscribe to active room data
-  useEffect(() => {
-    if (!activeRoomId) {
-      setActiveRoomData(null);
-      return;
-    }
-    const unsub = watchTogetherService.subscribeRoom(activeRoomId, (room) => {
-      if (!room || room.status === "closed") {
-        const wasHost = room?.hostId === currentAccount?.id;
-        setActiveRoomId(null);
-        if (!wasHost) {
-          showToast("Chủ phòng đã kết thúc xem chung.", "info");
-          setActiveTab("xem-chung");
-        }
-        watchTogetherService
-          .leaveRoom(currentAccount?.id || "")
-          .catch(() => {});
-      } else {
-        setActiveRoomData(room);
-      }
-    });
-    return () => unsub();
-  }, [activeRoomId, currentAccount?.id]);
-
-  // Watch Together - Subscribe to rooms for current film in detail
-  useEffect(() => {
-    if (!selectedMovieForDetail) {
-      setActiveRoomsForFilm([]);
-      return;
-    }
-    const unsub = watchTogetherService.subscribeActiveRooms(
-      selectedMovieForDetail.slug,
-      setActiveRoomsForFilm,
-    );
-    return () => unsub();
-  }, [selectedMovieForDetail]);
-
-  // Watch Together - Subscribe to ALL active rooms (for tab)
-  useEffect(() => {
-    const unsub =
-      watchTogetherService.subscribeAllActiveRooms(setAllActiveRooms);
-    return () => unsub();
-  }, []);
-
-  // Watch Together - Create room handler
-  const handleCreateRoom = useCallback(
-    async (
-      filmId: string,
-      filmName: string,
-      filmThumb: string,
-      episode: string,
-      episodeSlug: string,
-      serverName: string,
-      linkM3u8: string,
-      password: string,
-      visibility: any,
-    ) => {
-      if (!currentAccount || !activeProfile) return;
-      try {
-        const roomId = await watchTogetherService.createRoom({
-          filmId,
-          filmName,
-          filmThumb,
-          episode,
-          episodeSlug,
-          serverName,
-          linkM3u8,
-          hostId: currentAccount.id,
-          hostName: activeProfile.name || currentAccount.displayName,
-          password,
-          visibility,
-        });
-        setSelectedMovieForDetail(null);
-        setActiveRoomId(roomId);
-        showToast("Đã tạo phòng xem chung thành công!");
-        // Phòng không có route riêng: đưa URL về tab xem-chung (replace, khỏi rác history)
-        appNavigate(buildTabUrl("xem-chung"), { replace: true });
-      } catch (err: any) {
-        showToast(err.message, "error");
-      }
-    },
-    [currentAccount, activeProfile],
-  );
-
-  // Watch Together - Join room handler
-  const handleJoinRoom = useCallback(
-    async (roomId: string, password: string) => {
-      if (!currentAccount || !activeProfile) return;
-      try {
-        await watchTogetherService.joinRoom({
-          roomId,
-          userId: currentAccount.id,
-          userName: activeProfile.name || currentAccount.displayName,
-          userAvatar: activeProfile.avatar,
-          password,
-        });
-        setSelectedMovieForDetail(null);
-        setActiveRoomId(roomId);
-        showToast("Đã tham gia phòng xem chung!", "success");
-        appNavigate(buildTabUrl("xem-chung"), { replace: true });
-      } catch (err: any) {
-        const msg = err.message || "Mật khẩu sai. Vui lòng thử lại.";
-        if (msg.includes("Yêu cầu vào lại đã được gửi")) {
-          // Auto-request sent, enter room to show waiting screen
-          setSelectedMovieForDetail(null);
-          setActiveRoomId(roomId);
-          showToast("Yêu cầu đã được gửi, vui lòng chờ host duyệt");
-        } else {
-          showToast(msg, "error");
-        }
-      }
-    },
-    [currentAccount, activeProfile],
-  );
-
-  // Watch Together - Leave room handler
-  const handleLeaveRoom = useCallback(async () => {
-    if (currentAccount) {
-      await watchTogetherService.leaveRoom(currentAccount.id).catch(() => {});
-    }
-    setActiveRoomId(null);
-    setActiveRoomData(null);
-    // Trả URL về tab nếu đang kẹt ở URL detail/player cũ
-    try {
-      const r = parseLocation(window.location.pathname, window.location.search);
-      if (r.kind === "detail" || r.kind === "player") {
-        appNavigate(buildTabUrl("xem-chung"), { replace: true });
-      }
-    } catch {}
-  }, [currentAccount]);
-
-  // Watch Together - End room handler
-  const handleEndRoom = useCallback(async () => {
-    if (currentAccount) {
-      await watchTogetherService.endRoom(currentAccount.id).catch(() => {});
-    }
-    setActiveRoomId(null);
-    setActiveRoomData(null);
-    try {
-      const r = parseLocation(window.location.pathname, window.location.search);
-      if (r.kind === "detail" || r.kind === "player") {
-        appNavigate(buildTabUrl("xem-chung"), { replace: true });
-      }
-    } catch {}
-  }, [currentAccount]);
-
   // Fetch Home collections with Progressive 2-Stage Loading for maximum speed
   const fetchHomeData = useCallback(async () => {
     setIsLoadingHome(true);
@@ -988,96 +815,8 @@ export default function App() {
   // Auth Handlers
   const handleLoginSuccess = (account: Account) => {
     setCurrentAccount(account);
-    setShowAdminDashboard(false);
     showToast(`Chào mừng @${account.username} đến với Gấu Cinema!`);
   };
-
-  // TẠM THỜI cho test TV: ?autologin=username:password tự đăng nhập 1 lần
-  // (khỏi gõ phím bằng remote). Đọc + nuốt param NGAY trong render đầu
-  // (trước khi router/effect con kịp viết lại URL), cất vào sessionStorage
-  // để reload giữa chừng vẫn thử tiếp. XÓA trước khi release.
-  const [pendingAutoLogin] = useState<{ u: string; p: string } | null>(() => {
-    const consume = (value: string | null) => {
-      if (!value) return null;
-      const sep = value.indexOf(':');
-      if (sep <= 0) return null;
-      try {
-        const u = decodeURIComponent(value.slice(0, sep)).trim();
-        const p = decodeURIComponent(value.slice(sep + 1)).trim();
-        if (!u || !p) return null;
-        return { u, p };
-      } catch {
-        return null;
-      }
-    };
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const raw = params.get('autologin');
-      let creds = consume(raw);
-      if (raw) {
-        params.delete('autologin');
-        try {
-          window.history.replaceState(
-            null,
-            '',
-            window.location.pathname + (params.toString() ? `?${params.toString()}` : ''),
-          );
-        } catch {}
-      }
-      if (creds) {
-        try {
-          sessionStorage.setItem('gau_pending_autologin', JSON.stringify(creds));
-        } catch {}
-      } else {
-        try {
-          const saved = sessionStorage.getItem('gau_pending_autologin');
-          if (saved) {
-            const obj = JSON.parse(saved) as any;
-            if (obj && typeof obj.u === 'string' && typeof obj.p === 'string' && obj.u && obj.p) {
-              creds = { u: obj.u, p: obj.p };
-            }
-          }
-        } catch {}
-      }
-      return creds;
-    } catch {
-      return null;
-    }
-  });
-  useEffect(() => {
-    if (!pendingAutoLogin) return;
-    if (authService.getSessionAccount()) {
-      try {
-        sessionStorage.removeItem('gau_pending_autologin');
-      } catch {}
-      return;
-    }
-    let cancelled = false;
-    showToast(`Đang tự động đăng nhập @${pendingAutoLogin.u}...`);
-    authService
-      .login(pendingAutoLogin.u, pendingAutoLogin.p)
-      .then((account) => {
-        if (cancelled) return;
-        try {
-          sessionStorage.removeItem('gau_pending_autologin');
-        } catch {}
-        handleLoginSuccess(account);
-      })
-      .catch((err: any) => {
-        if (cancelled) return;
-        try {
-          sessionStorage.removeItem('gau_pending_autologin');
-        } catch {}
-        showToast(
-          `Tự động đăng nhập thất bại: ${err?.message || 'lỗi không rõ'}`,
-          'error',
-        );
-      });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingAutoLogin]);
 
   const handleLogout = () => {
     if (currentAccount) {
@@ -1087,7 +826,6 @@ export default function App() {
     setCurrentAccount(null);
     setActiveProfile(null);
     setShowProfileSelector(true);
-    setShowAdminDashboard(false);
     setPlayingMovie(null);
     showToast("Đã đăng xuất khỏi tài khoản.");
   };
@@ -1255,12 +993,8 @@ export default function App() {
         activeProfile?.name || currentAccount.displayName || "Người xem",
       profileAvatar: activeProfile?.avatar || "",
       type: "browsing",
-      itemTitle: showAdminDashboard
-        ? "Đang quản trị"
-        : "Đang xem danh mục Phim",
-      itemSubtitle: showAdminDashboard
-        ? "Trang quản trị"
-        : `Mục: ${activeTab.toUpperCase()}`,
+      itemTitle: "Đang xem danh mục Phim",
+      itemSubtitle: `Mục: ${activeTab.toUpperCase()}`,
     });
 
     return () => {
@@ -1272,40 +1006,17 @@ export default function App() {
     activeTab,
     playingMovie,
     showProfileSelector,
-    showAdminDashboard,
   ]);
 
   // Unified History/Back Button Manager
   // Tab/detail/player đã có router (RouteSync) lo theo URL; handler này chỉ giữ
-  // các overlay cùng-URL (admin, profiles) + stack riêng của manga.
+  // overlay cùng-URL (profiles).
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
-      // Manga overlay (detail/reader) is handled by MangaView; skip global handler to avoid exit popup
-      if (
-        e.state &&
-        (e.state.mangaView === "detail" || e.state.mangaView === "reader")
-      ) {
-        return;
-      }
-      // When popping from manga detail/reader to previous state, let MangaView clear its state; don't show exit
-      const curMangaView = (window.history.state as any)?.mangaView;
-      if (curMangaView === "detail" || curMangaView === "reader") {
-        return;
-      }
-      if (showAdminDashboard) {
-        if (
-          e.state &&
-          (e.state.overlay === "admin" ||
-            e.state.overlay === "admin_user_detail")
-        ) {
-          // Keep admin dashboard open when navigating internal admin subviews
-          return;
-        }
-        setShowAdminDashboard(false);
-      } else if (showProfileSelector && currentAccount && activeProfile) {
+      if (showProfileSelector && currentAccount && activeProfile) {
         setShowProfileSelector(false);
       } else if (!e.state) {
-        // Don't show exit when in manga/livetv app; MangaView handles its own back stack
+        // Don't show exit when in livetv app
         if (activeApp !== "cinema") {
           return;
         }
@@ -1326,19 +1037,9 @@ export default function App() {
         (window as any)?.Capacitor?.isNativePlatform?.()
       ) {
         CapApp.addListener("backButton", () => {
-          // Manga reader/detail has its own history stack; back should close it, not show exit popup
-          const curState: any = window.history.state;
-          if (
-            curState &&
-            (curState.mangaView === "detail" || curState.mangaView === "reader")
-          ) {
-            window.history.back();
-            return;
-          }
-          // When not in cinema app, don't show cinema exit popup; manga/livetv handle their own back
+          // When not in cinema app, don't show cinema exit popup; livetv handles its own back
           if (activeApp !== "cinema") {
-            // If manga has no overlay, let browser handle or do nothing; avoid showing cinema exit
-            if (!curState || !curState.mangaView) return;
+            return;
           }
           if (showExitConfirmModal) {
             setShowExitConfirmModal(false);
@@ -1359,7 +1060,6 @@ export default function App() {
             }
             else navActionsRef.current.closeDetailModal();
           } else if (
-            showAdminDashboard ||
             (showProfileSelector && currentAccount && activeProfile)
           ) {
             window.history.back();
@@ -1387,7 +1087,6 @@ export default function App() {
     showLogoutConfirm,
     playingMovie,
     selectedMovieForDetail,
-    showAdminDashboard,
     showProfileSelector,
     currentAccount,
     activeProfile,
@@ -1413,19 +1112,6 @@ export default function App() {
       setFilterGenre("");
     }
     appNavigate(buildTabUrl(tab));
-  };
-
-  const openAdminDashboard = () => {
-    window.history.pushState({ overlay: "admin" }, "", "");
-    setShowAdminDashboard(true);
-  };
-
-  const closeAdminDashboard = () => {
-    if (window.history.state && window.history.state.overlay === "admin") {
-      window.history.back();
-    } else {
-      setShowAdminDashboard(false);
-    }
   };
 
   const openProfileSelector = () => {
@@ -2004,17 +1690,6 @@ export default function App() {
     return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
   }
 
-  // 2. ADMIN DASHBOARD SCREEN
-  if (showAdminDashboard && currentAccount.role === "admin") {
-    return (
-      <AdminDashboard
-        currentAccount={currentAccount}
-        onBackToCinema={closeAdminDashboard}
-        onShowToast={showToast}
-      />
-    );
-  }
-
   let appContent = null;
 
   const {
@@ -2035,22 +1710,7 @@ export default function App() {
     netflixTop10TV,
   } = movieCollections;
 
-  if (activeApp === "manga") {
-    appContent = (
-      <MangaAppWrapper
-        currentAccount={currentAccount}
-        activeProfile={activeProfile}
-        profiles={profiles}
-        onSelectProfile={handleQuickSwitchProfile}
-        onSwitchApp={handleSwitchApp}
-        onSwitchProfileScreen={() => setShowProfileSelector(true)}
-        onOpenAdminDashboard={
-          currentAccount.role === "admin" ? openAdminDashboard : undefined
-        }
-        onLogout={handleLogoutRequest}
-      />
-    );
-  } else if (activeApp === "livetv") {
+  if (activeApp === "livetv") {
     appContent = (
       <LiveTvAppWrapper
         currentAccount={currentAccount}
@@ -2059,9 +1719,6 @@ export default function App() {
         onSelectProfile={handleQuickSwitchProfile}
         onSwitchApp={handleSwitchApp}
         onSwitchProfileScreen={() => setShowProfileSelector(true)}
-        onOpenAdminDashboard={
-          currentAccount.role === "admin" ? openAdminDashboard : undefined
-        }
         onLogout={handleLogoutRequest}
       />
     );
@@ -2087,11 +1744,6 @@ export default function App() {
                 onAddProfile={handleAddProfile}
                 onDeleteProfile={handleDeleteProfile}
                 onLogout={handleLogoutRequest}
-                onOpenAdminDashboard={
-                  currentAccount.role === "admin"
-                    ? openAdminDashboard
-                    : undefined
-                }
                 onShowToast={showToast}
               />
             </motion.div>
@@ -2132,9 +1784,6 @@ export default function App() {
             onSelectMovie={(movie) => openDetailModal(movie)}
             onPlayMovie={handlePlayMovie}
             onSearchSubmit={handleSearchSubmit}
-            onOpenAdminDashboard={
-              currentAccount.role === "admin" ? openAdminDashboard : undefined
-            }
             onLogout={handleLogoutRequest}
             onSwitchApp={handleSwitchApp}
             onRefreshHome={fetchHomeData}
@@ -2667,97 +2316,6 @@ export default function App() {
                   </div>
                 )}
 
-                {/* WATCH TOGETHER TAB */}
-                {activeTab === "xem-chung" && (
-                  <div className="pt-20 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-16">
-                    <div className="flex items-center gap-3 mb-6">
-                      <Users className="w-6 h-6 text-emerald-400" />
-                      <h1 className="text-2xl font-bold text-white">
-                        Phòng đang xem chung
-                      </h1>
-                      <span className="px-2.5 py-0.5 rounded-full bg-emerald-600/20 text-emerald-400 text-xs font-bold">
-                        {allActiveRooms.length}
-                      </span>
-                    </div>
-
-                    {allActiveRooms.length === 0 ? (
-                      <div className="text-center py-20">
-                        <Users className="w-12 h-12 text-slate-600 mx-auto mb-4" />
-                        <p className="text-slate-400 text-sm">
-                          Chưa có phòng xem chung nào đang hoạt động.
-                        </p>
-                        <p className="text-slate-500 text-xs mt-1">
-                          Hãy tạo phòng từ trang chi tiết phim!
-                        </p>
-                      </div>
-                    ) : (
-                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                        {allActiveRooms.map((room) => (
-                          <div
-                            key={room.roomId}
-                            className="p-4 rounded-2xl bg-[#0f172a] border border-slate-700/40 hover:border-emerald-500/30 transition-all cursor-pointer group"
-                            onClick={() => {
-                              if (activeRoomId) {
-                                showToast(
-                                  "Bạn đang ở trong một phòng khác. Vui lòng rời phòng trước.",
-                                  "warning",
-                                );
-                                return;
-                              }
-                              if (room.visibility === "public") {
-                                handleJoinRoom(room.roomId, "");
-                              } else {
-                                setJoinRoomTarget(room);
-                              }
-                            }}
-                          >
-                            <div className="flex items-start justify-between mb-3">
-                              <div className="min-w-0 flex-1">
-                                <h3 className="text-sm font-bold text-white truncate group-hover:text-emerald-300 transition-colors">
-                                  {room.filmName}
-                                </h3>
-                                <p className="text-xs text-sky-400 mt-0.5">
-                                  {room.episode}
-                                </p>
-                              </div>
-                              <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-slate-700/50 text-slate-400 shrink-0 ml-2">
-                                {room.visibility === "private"
-                                  ? "🔒 Private"
-                                  : "🌐 Public"}
-                              </span>
-                            </div>
-                            <div className="flex items-center justify-between text-xs text-slate-400">
-                              <span className="flex items-center gap-1">
-                                <Users className="w-3 h-3" />
-                                {room.viewersCount} đang xem
-                              </span>
-                              <span>Host: {room.hostName}</span>
-                            </div>
-                            <div className="mt-3 flex items-center justify-between">
-                              <span className="text-[10px] text-slate-500">
-                                {new Date(room.createdAt).toLocaleTimeString(
-                                  "vi-VN",
-                                  { hour: "2-digit", minute: "2-digit" },
-                                )}
-                              </span>
-                              <button
-                                disabled={!!activeRoomId}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                                  activeRoomId
-                                    ? "bg-slate-700/30 text-slate-500 cursor-not-allowed"
-                                    : "bg-emerald-600 hover:bg-emerald-500 text-white"
-                                }`}
-                              >
-                                Vào phòng
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-
                 {/* MY LIST TAB */}
                 {activeTab === "my-list" && (
                   <div className="pt-20">
@@ -2843,14 +2401,6 @@ export default function App() {
                     LiveTV
                   </div>
                 )}
-
-                {/* MANGA READER TAB (Now handled by Sub-App, but keep fallback) */}
-                {activeTab === "manga" && (
-                  <div className="pt-20 text-center text-slate-400">
-                    Vui lòng sử dụng tính năng App Switcher để chuyển sang Gấu
-                    Manga
-                  </div>
-                )}
               </motion.div>
             </AnimatePresence>
           </main>
@@ -2858,7 +2408,7 @@ export default function App() {
 
         {/* 5. Movie Detail Modal */}
         <AnimatePresence mode="wait">
-          {selectedMovieForDetail && !activeRoomId && (
+          {selectedMovieForDetail && (
             <MovieDetailModal
               key={`detail-${selectedMovieForDetail.slug}`}
               movie={selectedMovieForDetail}
@@ -2873,54 +2423,10 @@ export default function App() {
               onSelectCountry={handleSelectCountry}
               currentAccount={currentAccount}
               activeProfile={activeProfile}
-              activeRooms={activeRoomsForFilm}
-              userActiveRoomId={activeRoomId}
-              onCreateRoom={handleCreateRoom}
-              onJoinRoom={handleJoinRoom}
               onShowToast={showToast}
             />
           )}
         </AnimatePresence>
-
-        {/* 5b. Watch Together Room */}
-        {activeRoomId && !activeRoomData && currentAccount && (
-          <div className="fixed inset-0 z-[80] bg-[#060a14] flex items-center justify-center">
-            <div className="text-center space-y-3">
-              <Loader2 className="w-8 h-8 text-sky-400 animate-spin mx-auto" />
-              <p className="text-sm text-slate-300">Đang vào phòng...</p>
-            </div>
-          </div>
-        )}
-        {activeRoomId && activeRoomData && currentAccount && activeProfile && (
-          <WatchTogetherRoom
-            room={activeRoomData}
-            currentUserId={currentAccount.id}
-            currentUserName={activeProfile.name || currentAccount.displayName}
-            currentUserAvatar={activeProfile.avatar}
-            onLeave={handleLeaveRoom}
-            onEndRoom={handleEndRoom}
-            onRoomClosed={() => {
-              handleLeaveRoom();
-              setActiveTab("xem-chung");
-            }}
-          />
-        )}
-
-        {/* Join Room Modal (from Xem Chung tab) */}
-        {joinRoomTarget && (
-          <JoinRoomModal
-            isOpen={!!joinRoomTarget}
-            roomId={joinRoomTarget.roomId}
-            hostName={joinRoomTarget.hostName}
-            episode={joinRoomTarget.episode}
-            viewersCount={joinRoomTarget.viewersCount}
-            onClose={() => setJoinRoomTarget(null)}
-            onSubmit={async (password) => {
-              await handleJoinRoom(joinRoomTarget.roomId, password);
-              setJoinRoomTarget(null);
-            }}
-          />
-        )}
 
         {/* 6. Comprehensive Footer */}
         {!showProfileSelector && !playingMovie && (

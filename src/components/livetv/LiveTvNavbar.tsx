@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { UserProfile, Account } from '../../types';
-import { Tv, User, ChevronDown, Check, Home, BookOpen, LayoutGrid, Shield, Settings, LogOut, Lock, Clapperboard, HardDrive } from 'lucide-react';
+import { Tv, User, ChevronDown, Check, Home, LayoutGrid, Shield, LogOut, Lock, Clapperboard, HardDrive } from 'lucide-react';
 import appLogo from '../../assets/images/app_logo.jpg';
 import { motion, AnimatePresence } from 'motion/react';
 import { appConfigService } from '../../services/appConfigService';
@@ -11,9 +11,8 @@ interface LiveTvNavbarProps {
   activeProfile: UserProfile | null;
   profiles: UserProfile[];
   onSelectProfile: (profile: UserProfile) => void;
-  onSwitchApp: (app: 'cinema' | 'manga' | 'livetv') => void;
+  onSwitchApp: (app: 'cinema' | 'livetv') => void;
   onSwitchProfileScreen?: () => void;
-  onOpenAdminDashboard?: () => void;
   onLogout?: () => void;
   onLogoClick?: () => void;
 }
@@ -25,7 +24,6 @@ export const LiveTvNavbar: React.FC<LiveTvNavbarProps> = ({
   onSelectProfile,
   onSwitchApp,
   onSwitchProfileScreen,
-  onOpenAdminDashboard,
   onLogout,
   onLogoClick
 }) => {
@@ -134,15 +132,6 @@ export const LiveTvNavbar: React.FC<LiveTvNavbarProps> = ({
                       <div className="w-8 h-8 rounded-lg bg-blue-900/40 flex items-center justify-center"><Home className="w-4 h-4 text-blue-400"/></div>
                       <div className="flex flex-col items-start"><span>Gấu Cinema HD</span><span className="text-[10px] text-slate-400">Xem phim thả ga</span></div>
                     </button>
-                    <button
-                      onClick={() => { if (appConfig.manga?.enabled !== false) { onSwitchApp('manga'); setIsAppMenuOpen(false); } }}
-                      disabled={appConfig.manga?.enabled === false}
-                      className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-sm font-medium transition-colors ${appConfig.manga?.enabled === false ? 'opacity-40 cursor-not-allowed text-slate-500' : 'text-slate-200 hover:bg-purple-900/30 hover:text-purple-300'}`}
-                    >
-                      <div className="w-8 h-8 rounded-lg bg-purple-900/40 flex items-center justify-center"><BookOpen className="w-4 h-4 text-purple-400"/></div>
-                      <div className="flex flex-col items-start"><span>Gấu Manga</span><span className="text-[10px] text-slate-400">{appConfig.manga?.enabled === false ? 'Đang bảo trì' : 'Thế giới truyện tranh'}</span></div>
-                      {appConfig.manga?.enabled === false && <span className="ml-auto text-[9px] font-bold text-red-400 bg-red-950 px-1.5 py-0.5 rounded-full">OFF</span>}
-                    </button>
 
                   </div>
                 </div>
@@ -205,19 +194,6 @@ export const LiveTvNavbar: React.FC<LiveTvNavbarProps> = ({
                   </div>
 
                   <div className="space-y-1">
-                    {currentAccount?.role === 'admin' && onOpenAdminDashboard && (
-                      <button
-                        onClick={() => {
-                          onOpenAdminDashboard();
-                          setIsProfileMenuOpen(false);
-                        }}
-                        className="w-full flex items-center gap-2.5 p-2 rounded-xl text-sm font-bold text-indigo-300 hover:bg-indigo-950/80 hover:text-indigo-200 transition-colors cursor-pointer border border-indigo-900/60"
-                      >
-                        <Settings className="w-4 h-4 text-indigo-400" />
-                        <span>Quản Trị Hệ Thống (Admin)</span>
-                      </button>
-                    )}
-
                     {onSwitchProfileScreen && (
                       <button
                         onClick={() => {

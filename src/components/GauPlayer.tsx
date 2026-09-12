@@ -264,6 +264,9 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   const gestureToastTimer = useRef<number | null>(null);
   const seekFlashTimer = useRef<number | null>(null);
   const holdTimer = useRef<number | null>(null);
+  // Nút play/pause giữa màn hình: flash ~1s mỗi lần bấm rồi tự ẩn
+  const [showCenterFlash, setShowCenterFlash] = useState(false);
+  const centerFlashTimer = useRef<number | null>(null);
   const prevRateRef = useRef(1);
   const showControlsRef = useRef(true);
   showControlsRef.current = showControls;
@@ -539,7 +542,8 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     resetControlsTimerRef.current();
   }, [duration, queueSeekCaptures]);
 
-  // OK: actualTime = previewTime, thoát mode, phát tiếp
+  // OK: actualTime = previewTime, thoát mode, PLAY LUÔN (kể cả vào seek lúc
+  // đang pause — người dùng đã chọn điểm xem mới thì phát tiếp chứ không giữ pause)
   const commitSeek = useCallback(() => {
     const v = videoRef.current;
     const d = (v?.duration && isFinite(v.duration) ? v.duration : 0) || duration;
@@ -550,7 +554,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     setSeekMode(false);
     // smartSeek khai báo sau (tránh TDZ) nên gọi qua ref
     if (v && d) smartSeekRef.current(t);
-    if (v && seekWasPlayingRef.current) v.play().catch(() => {});
+    if (v) v.play().catch(() => {});
     resetControlsTimerRef.current();
   }, [duration]);
 
@@ -1185,6 +1189,12 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     const v = videoRef.current;
     if (!v) return;
     if (v.paused) v.play().catch(() => {}); else v.pause();
+    // Nút play giữa màn hình flash ~1s rồi ẩn (không theo timer controls 4s)
+    try {
+      if (centerFlashTimer.current) window.clearTimeout(centerFlashTimer.current);
+    } catch {}
+    setShowCenterFlash(true);
+    centerFlashTimer.current = window.setTimeout(() => setShowCenterFlash(false), 1000);
   }, []);
   /** Smart seek: trong buffer thì set trực tiếp (nhanh nhất); ngoài buffer
    * thì fastSeek nếu browser hỗ trợ, không thì currentTime thường. */
@@ -1935,7 +1945,18 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           // Ngoại lệ: đang đứng trên nút skip intro / tập tiếp theo (hiện ngoài
           // overlay) -> D-pad vẫn điều hướng bình thường, không nuốt phím.
           e.preventDefault();
-          if (hidden && !ae?.hasAttribute?.('data-tv-skip-segment')) {
+          const onSkipBtn = !!ae?.hasAttribute?.('data-tv-skip-segment');
+          if (hidden && !onSkipBtn) {
+            // Controls đang ẩn: ←/→ vào thẳng Seek Mode (filmstrip) + dời 1 bước.
+            // Không vào được (embed/chưa có duration) thì đánh thức controls như cũ.
+            if (enterSeekMode()) {
+              moveSeekFocus(k === 'ArrowLeft' ? 'left' : 'right');
+            } else {
+              wakeControls();
+            }
+            return;
+          }
+          if (hidden) {
             wakeControls();
             return;
           }
@@ -1976,26 +1997,21 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           wakeControls();
           return;
         }
-        // OK: ẩn -> chỉ đánh thức (trừ khi đang đứng trên nút skip intro /
-        // tập tiếp theo thì để browser click); hiện -> nút thì để browser click,
-        // card thì click tay, còn lại play/dừng.
+        // OK: nút (kể cả skip khi controls ẩn) thì để browser click;
+        // controls ẩn thì play/pause NGAY + flash nút giữa 1s (không đánh thức trước);
+        // hiện + focus ngoài nút -> card thì click, còn lại play/dừng
+        // (kể cả đang đứng trên timeline — chỉ ←/→ mới vào Seek Mode).
         if (k === ' ' || k === 'Enter' || k === 'NumpadEnter') {
           const activeOk = document.activeElement as HTMLElement | null;
-          if (hidden && !activeOk?.hasAttribute?.('data-tv-skip-segment')) {
-            e.preventDefault();
-            wakeControls();
-            return;
-          }
-          const active = document.activeElement as HTMLElement | null;
-          if (active && (active.tagName === 'BUTTON' || active.tagName === 'A')) {
+          if (activeOk && (activeOk.tagName === 'BUTTON' || activeOk.tagName === 'A')) {
             return; // browser tự click, không chặn
           }
           e.preventDefault();
-          // TV: OK đang đứng trên timeline -> vào Seek Mode (filmstrip) thay vì play/dừng
-          if (tv && active?.closest?.('.group\\/scrub')) {
-            e.stopPropagation();
-            if (enterSeekMode()) return;
+          if (hidden) {
+            togglePlay();
+            return;
           }
+          const active = activeOk;
           if (active && active.hasAttribute('data-tv-card')) {
             try {
               active.click();
@@ -2022,6 +2038,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       if (singleTapTimer.current) window.clearTimeout(singleTapTimer.current);
       if (gestureToastTimer.current) window.clearTimeout(gestureToastTimer.current);
       if (seekFlashTimer.current) window.clearTimeout(seekFlashTimer.current);
+      if (centerFlashTimer.current) window.clearTimeout(centerFlashTimer.current);
       if (holdTimer.current) window.clearTimeout(holdTimer.current);
     };
   }, [togglePlay, skip, toggleFullscreen, toggleMute, activeSegment, handleSkipSegment, duration, renderScrubPreview, smartSeek, enterSeekMode, moveSeekFocus, commitSeek]);
@@ -2342,7 +2359,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             Desktop không dùng nút giữa màn hình (play + tua đã có ở hàng bottom).
             TV: chỉ giữ nút play giữa, BỎ 2 nút tua 10s (tua bằng timeline + D-pad). */}
         {(isTouchDevice || isTv) ? (
-          !isLocked && showControls && !isLoading && !errorMsg && !seekMode && (
+          !isLocked && !isLoading && !errorMsg && !seekMode && showCenterFlash && (
             <div
               className="absolute inset-0 flex items-center justify-center gap-14 sm:gap-12 pointer-events-none z-20"
               onTouchStart={e => e.stopPropagation()}

@@ -12,7 +12,6 @@ import {
   Layers,
   Play,
   Info,
-  Settings,
   LogOut,
   Shield,
   Lock,
@@ -21,7 +20,6 @@ import {
   Sparkles,
   LayoutGrid,
   Tv,
-  BookOpen,
   Download,
   HardDrive,
 } from 'lucide-react';
@@ -47,9 +45,8 @@ interface NavbarProps {
   onSelectMovie: (movie: Movie) => void;
   onPlayMovie?: (movie: Movie) => void;
   onSearchSubmit: (query: string) => void;
-  onOpenAdminDashboard?: () => void;
   onLogout?: () => void;
-  onSwitchApp: (app: 'cinema' | 'manga' | 'livetv') => void;
+  onSwitchApp: (app: 'cinema' | 'livetv') => void;
   onRefreshHome?: () => void;
 }
 
@@ -64,7 +61,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSelectMovie,
   onPlayMovie,
   onSearchSubmit,
-  onOpenAdminDashboard,
   onLogout,
   onSwitchApp,
   onRefreshHome,
@@ -277,7 +273,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   // Secondary navigation tabs (Temporarily hide when search expands)
   const secondaryNavItems: { label: string; tab: NavTab }[] = [
     { label: 'Khám Phá / Lọc', tab: 'filter' },
-    { label: 'Xem Chung', tab: 'xem-chung' },
     ...(isNativeApp ? [{ label: 'Đã Lưu', tab: 'offline' as NavTab }] : []),
   ];
 
@@ -631,34 +626,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                     )}
                   </button>
 
-                  <button
-                    onClick={() => {
-                      if (appConfig.manga?.enabled !== false) {
-                        onSwitchApp('manga');
-                        setIsAppMenuOpen(false);
-                      }
-                    }}
-                    disabled={appConfig.manga?.enabled === false}
-                    className={`w-full flex items-center gap-3 p-2.5 rounded-xl text-sm font-medium transition-colors cursor-pointer group ${
-                      appConfig.manga?.enabled === false
-                        ? 'opacity-40 cursor-not-allowed text-slate-500'
-                        : 'text-slate-200 hover:bg-purple-900/30 hover:text-purple-300'
-                    }`}
-                  >
-                    <div className="w-8 h-8 rounded-lg bg-purple-900/40 flex items-center justify-center group-hover:bg-purple-500/20 shrink-0">
-                      <BookOpen className="w-4 h-4 text-purple-400" />
-                    </div>
-                    <div className="flex flex-col items-start">
-                      <span>Gấu Manga</span>
-                      <span className="text-[10px] text-slate-400 font-normal">
-                        {appConfig.manga?.enabled === false ? 'Đang bảo trì' : 'Thế giới truyện tranh manga'}
-                      </span>
-                    </div>
-                    {appConfig.manga?.enabled === false && (
-                      <span className="ml-auto text-[9px] font-bold text-red-400 bg-red-950 px-1.5 py-0.5 rounded-full">OFF</span>
-                    )}
-                  </button>
-
 
                   </div>
               </div>
@@ -761,20 +728,6 @@ export const Navbar: React.FC<NavbarProps> = ({
                 </div>
 
                 <div className="space-y-1">
-                  {currentAccount?.role === 'admin' && onOpenAdminDashboard && (
-                    <button
-                      id="navbar-admin-dashboard-btn"
-                      onClick={() => {
-                        onOpenAdminDashboard();
-                        setIsProfileMenuOpen(false);
-                      }}
-                      className="w-full flex items-center gap-2.5 p-2 rounded-xl text-sm font-bold text-indigo-300 hover:bg-indigo-950/80 hover:text-indigo-200 transition-colors cursor-pointer border border-indigo-900/60"
-                    >
-                      <Settings className="w-4 h-4 text-indigo-400" />
-                      <span>Quản Trị Hệ Thống (Admin)</span>
-                    </button>
-                  )}
-
                   <button
                     id="change-profile-screen-btn"
                     onClick={() => {

@@ -13,7 +13,6 @@ import {
 } from 'firebase/firestore';
 import { db, handleFirestoreError, isFirestoreQuotaExhausted, OperationType, sanitizeData } from './firebase';
 import { AdminNotification, CustomAvatar, MyListItem, UserProfile, WatchHistoryItem, YouTubeVideo } from '../types';
-import { MangaItem, MangaHistoryItem } from './mangaApi';
 import { DEFAULT_AVATARS } from './authService';
 
 const ACTIVE_PROFILE_KEY = 'qtb_active_profile_id_v2';

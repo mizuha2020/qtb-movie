@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useRef } from 'react';
-import { EpisodeServer, Movie, MovieEpisode, RoomListItem, RoomVisibility, Account, UserProfile } from '../types';
+import { EpisodeServer, Movie, MovieEpisode, Account, UserProfile } from '../types';
 import { movieApi, getImageUrl, getTmdbAssets, tmdbFetch } from '../services/movieApi';
 import {
   Play,
@@ -17,7 +17,6 @@ import {
   X,
   Search,
   User,
-  Users,
   Lock,
   Loader2,
   Download,
@@ -26,7 +25,6 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import DOMPurify from 'dompurify';
-import { CreateRoomModal, JoinRoomModal } from './watch-together';
 import { offlineMovieService } from '../services/offlineMovieService';
 import { followMovieService } from '../services/followMovieService';
 import { Capacitor } from '@capacitor/core';
@@ -45,10 +43,6 @@ interface MovieDetailModalProps {
   onSelectCountry?: (countrySlug: string) => void;
   currentAccount?: Account | null;
   activeProfile?: UserProfile | null;
-  activeRooms?: RoomListItem[];
-  userActiveRoomId?: string | null;
-  onCreateRoom?: (filmId: string, filmName: string, filmThumb: string, episode: string, episodeSlug: string, serverName: string, linkM3u8: string, password: string, visibility: RoomVisibility) => Promise<void>;
-  onJoinRoom?: (roomId: string, password: string) => Promise<void>;
   onShowToast?: (msg: string, type?: 'info' | 'success' | 'error' | 'warning') => void;
 }
 
@@ -93,10 +87,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
   onSelectCountry,
   currentAccount,
   activeProfile,
-  activeRooms = [],
-  userActiveRoomId,
-  onCreateRoom,
-  onJoinRoom,
   onShowToast,
 }) => {
   const [fullMovieData, setFullMovieData] = useState<Movie | null>(null);
@@ -110,11 +100,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
 
   // Trailer states
   const [showTrailer, setShowTrailer] = useState(false);
-
-  // Watch Together states
-  const [showCreateRoomModal, setShowCreateRoomModal] = useState(false);
-  const [joinTargetRoom, setJoinTargetRoom] = useState<RoomListItem | null>(null);
-  const [selectedEpisodeForRoom, setSelectedEpisodeForRoom] = useState<{ ep: MovieEpisode; server: EpisodeServer } | null>(null);
   const [isSynopsisExpanded, setIsSynopsisExpanded] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -1044,31 +1029,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                       )}
                     </button>
  
-                    {/* Watch Together Button */}
-                    {currentAccount && activeProfile && episodes.length > 0 && (
-                      <button
-                        id="hero-watch-together-btn"
-                        onClick={() => {
-                          const ep = episodes[selectedServerIndex]?.server_data[0];
-                          const server = episodes[selectedServerIndex];
-                          if (ep && server && onCreateRoom) {
-                            setSelectedEpisodeForRoom({ ep, server });
-                            setShowCreateRoomModal(true);
-                          }
-                        }}
-                        disabled={!!userActiveRoomId}
-                        className={`flex items-center gap-2 px-4 sm:px-5 py-2.5 sm:py-3.5 rounded-2xl font-bold text-xs sm:text-sm border transition-all cursor-pointer ${
-                          userActiveRoomId
-                            ? 'bg-slate-800/50 border-slate-700/30 text-slate-500 cursor-not-allowed'
-                            : 'bg-emerald-600/20 hover:bg-emerald-600/30 border-emerald-500/50 text-emerald-300 hover:text-emerald-200'
-                        }`}
-                        title={userActiveRoomId ? 'Bạn đang ở trong một phòng khác' : 'Tạo phòng xem chung'}
-                      >
-                        <Users className="w-4 h-4" />
-                        <span>Xem Chung</span>
-                      </button>
-                    )}
- 
                     {/* Follow Button - Báo tập mới */}
                     {currentAccount && activeProfile && (
                       <button
@@ -1177,28 +1137,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                       </>
                     )}
                   </button>
-
-                  {currentAccount && activeProfile && episodes.length > 0 && onCreateRoom && (
-                    <button
-                      onClick={() => {
-                        const ep = episodes[selectedServerIndex]?.server_data[0];
-                        const server = episodes[selectedServerIndex];
-                        if (ep && server) {
-                          setSelectedEpisodeForRoom({ ep, server });
-                          setShowCreateRoomModal(true);
-                        }
-                      }}
-                      disabled={!!userActiveRoomId}
-                      className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl font-bold text-xs border cursor-pointer transition-all active:scale-95 duration-150 ${
-                        userActiveRoomId
-                          ? 'bg-slate-800/40 border-slate-800/20 text-slate-600 cursor-not-allowed'
-                          : 'bg-emerald-600/10 border-emerald-500/40 text-emerald-400 hover:text-emerald-300'
-                      }`}
-                    >
-                      <Users className="w-3.5 h-3.5" />
-                      <span>Xem Chung</span>
-                    </button>
-                  )}
 
                   {currentAccount && activeProfile && (
                     <button
@@ -1386,29 +1324,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                     </>
                   )}
                 </button>
- 
-                {/* Xem Chung */}
-                {currentAccount && activeProfile && episodes.length > 0 && (
-                  <button
-                    onClick={() => {
-                      const ep = episodes[selectedServerIndex]?.server_data[0];
-                      const server = episodes[selectedServerIndex];
-                      if (ep && server && onCreateRoom) {
-                        setSelectedEpisodeForRoom({ ep, server });
-                        setShowCreateRoomModal(true);
-                      }
-                    }}
-                    disabled={!!userActiveRoomId}
-                    className={`flex items-center gap-1.5 px-4 py-2 rounded-xl font-bold text-xs border shrink-0 cursor-pointer snap-start transition-all ${
-                      userActiveRoomId
-                        ? 'bg-slate-800/40 border-slate-800/20 text-slate-600 cursor-not-allowed'
-                        : 'bg-emerald-600/10 border-emerald-500/40 text-emerald-400 hover:text-emerald-300'
-                    }`}
-                  >
-                    <Users className="w-3.5 h-3.5" />
-                    <span>Xem Chung</span>
-                  </button>
-                )}
  
                 {/* Theo Dõi */}
                 {currentAccount && activeProfile && (
@@ -2204,75 +2119,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
             </section>
           )}
 
-          {/* Active Watch Together Rooms */}
-          {activeRooms.length > 0 && (
-            <section className="px-4 sm:px-6 md:px-8 py-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Users className="w-5 h-5 text-emerald-400" />
-                <h3 className="text-lg font-bold text-white">
-                  Phòng đang xem chung
-                  <span className="ml-2 text-sm font-normal text-slate-400">({activeRooms.length})</span>
-                </h3>
-              </div>
-              <div className="space-y-2">
-                {activeRooms.map((room) => (
-                  <div
-                    key={room.roomId}
-                    className="flex items-center justify-between p-3 sm:p-4 rounded-xl bg-slate-800/40 border border-slate-700/30 hover:border-emerald-500/30 transition-colors"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="w-10 h-10 rounded-xl bg-emerald-600/20 flex items-center justify-center shrink-0">
-                        <Users className="w-5 h-5 text-emerald-400" />
-                      </div>
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-white truncate">{room.hostName}</span>
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-700/50 text-slate-400">
-                            {room.episode}
-                          </span>
-                          {room.visibility === 'private' ? (
-                            <Lock className="w-3 h-3 text-amber-400 shrink-0" />
-                          ) : (
-                            <Globe className="w-3 h-3 text-sky-400 shrink-0" />
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 text-xs text-slate-400 mt-0.5">
-                          <span className="flex items-center gap-1">
-                            <Users className="w-3 h-3" />
-                            {room.viewersCount} đang xem
-                          </span>
-                          <span>•</span>
-                          <span>{new Date(room.createdAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        if (userActiveRoomId) {
-                          onShowToast?.('Bạn đang ở trong một phòng khác. Vui lòng rời phòng trước khi tham gia phòng mới.', 'warning');
-                          return;
-                        }
-                        if (room.visibility === 'public') {
-                          onJoinRoom?.(room.roomId, '');
-                        } else {
-                          setJoinTargetRoom(room);
-                        }
-                      }}
-                      disabled={!!userActiveRoomId}
-                      className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all shrink-0 ml-3 ${
-                        userActiveRoomId
-                          ? 'bg-slate-700/30 text-slate-500 cursor-not-allowed'
-                          : 'bg-sky-600 hover:bg-sky-500 text-white'
-                      }`}
-                    >
-                      Vào phòng
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
-
           {/* Bottom Footer */}
           <footer className="pt-6 pb-4 border-t border-slate-900 flex flex-col sm:flex-row items-center justify-between gap-3 text-slate-500 text-xs">
             <p>© 2026 Gấu Cinema • Trải nghiệm điện ảnh gia đình chất lượng cao</p>
@@ -2285,49 +2131,6 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
           </footer>
         </main>
 
-      {/* Watch Together Modals */}
-      {showCreateRoomModal && currentAccount && activeProfile && selectedEpisodeForRoom && currentData && (
-        <CreateRoomModal
-          isOpen={showCreateRoomModal}
-          filmName={currentData.name}
-          episode={selectedEpisodeForRoom.ep.name}
-          onClose={() => { setShowCreateRoomModal(false); setSelectedEpisodeForRoom(null); }}
-          onSubmit={async (password, visibility) => {
-            if (onCreateRoom) {
-              await onCreateRoom(
-                currentData.slug,
-                currentData.name,
-                currentData.thumb_url || currentData.poster_url,
-                selectedEpisodeForRoom.ep.name,
-                selectedEpisodeForRoom.ep.slug,
-                selectedEpisodeForRoom.server.server_name,
-                selectedEpisodeForRoom.ep.link_m3u8,
-                password,
-                visibility
-              );
-              setShowCreateRoomModal(false);
-              setSelectedEpisodeForRoom(null);
-            }
-          }}
-        />
-      )}
-
-      {joinTargetRoom && (
-        <JoinRoomModal
-          isOpen={!!joinTargetRoom}
-          roomId={joinTargetRoom.roomId}
-          hostName={joinTargetRoom.hostName}
-          episode={joinTargetRoom.episode}
-          viewersCount={joinTargetRoom.viewersCount}
-          onClose={() => setJoinTargetRoom(null)}
-          onSubmit={async (password) => {
-            if (onJoinRoom) {
-              await onJoinRoom(joinTargetRoom.roomId, password);
-              setJoinTargetRoom(null);
-            }
-          }}
-        />
-      )}
     </motion.div>
   );
 };

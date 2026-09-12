@@ -42,10 +42,12 @@ const FOCUSABLE_SEL =
 
 function isVisible(el: HTMLElement): boolean {
   try {
+    // Chỉ đo rect (rẻ, browser batch được). KHÔNG gọi getComputedStyle mỗi phím:
+    // style recalc trên hàng trăm nút là nguyên nhân lag D-pad ở home.
+    // Trường hợp opacity-0 còn rect (controls player ẩn...) không lọt vào pool
+    // vì khi player mở, phím do GauPlayer xử lý riêng, không qua đây.
     const r = el.getBoundingClientRect();
     if (r.width <= 4 || r.height <= 4) return false;
-    const st = window.getComputedStyle(el);
-    if (st.visibility === 'hidden' || st.display === 'none' || st.opacity === '0') return false;
     // KHÔNG lọc theo viewport: item dưới fold là target hợp lệ, bấm 1 phát là
     // focus nhảy tới + tvScrollIntoView cuộn theo. (Lọc viewport từng làm DPAD
     // xuống hàng chỉ cuộn chay mà không đổi focus.)
@@ -123,7 +125,22 @@ function describeEl(el: HTMLElement | null): string {
  *  Tween tay 200ms ease-out: mượt hơn instant (giật) mà không bò như smooth của browser.
  *  Bấm dồn thì tween cũ bị hủy, nối tiếp từ vị trí hiện tại. */
 const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-const TV_SCROLL_MS = 200;
+const TV_SCROLL_MS = 150;
+// Bấm dồn (<120ms/phát) thì cuộn instant thay vì tween mới chồng tween cũ —
+// vừa đỡ khựng trên box yếu, vừa theo kịp tốc độ bấm remote.
+let lastProgScrollAt = 0;
+let scrollRetryTimer = 0;
+
+function shouldInstantScroll(): boolean {
+  try {
+    const now = Date.now();
+    const rapid = now - lastProgScrollAt < 120;
+    lastProgScrollAt = now;
+    return rapid;
+  } catch {
+    return false;
+  }
+}
 
 function reduceMotion(): boolean {
   try {
@@ -134,11 +151,11 @@ function reduceMotion(): boolean {
 }
 
 let winScrollRaf = 0;
-function smoothWindowScrollBy(dy: number) {
+function smoothWindowScrollBy(dy: number, instant = false) {
   try {
     cancelAnimationFrame(winScrollRaf);
     if (!dy) return;
-    if (reduceMotion()) {
+    if (instant || reduceMotion()) {
       window.scrollBy(0, Math.round(dy));
       return;
     }
@@ -158,14 +175,14 @@ function smoothWindowScrollBy(dy: number) {
 }
 
 const rowRafs = new WeakMap<HTMLElement, number>();
-function smoothVertScrollTo(el: HTMLElement, to: number) {
+function smoothVertScrollTo(el: HTMLElement, to: number, instant = false) {
   try {
     const prev = rowRafs.get(el);
     if (prev) cancelAnimationFrame(prev);
     const from = el.scrollTop;
     const d = to - from;
     if (!d) return;
-    if (reduceMotion()) {
+    if (instant || reduceMotion()) {
       el.scrollTop = to;
       return;
     }
@@ -184,14 +201,15 @@ function smoothVertScrollTo(el: HTMLElement, to: number) {
     } catch {}
   }
 }
-function smoothRowScrollTo(el: HTMLElement, to: number) {
+function smoothRowScrollTo(el: HTMLElement, to: number, instant = false) {
   try {
     const prev = rowRafs.get(el);
     if (prev) cancelAnimationFrame(prev);
     const from = el.scrollLeft;
     const d = to - from;
     if (!d) return;
-    if (reduceMotion()) {
+    // Lệch nhỏ thì khỏi animate (đỡ giật liên tục khi đi ngang từng card)
+    if (Math.abs(d) < 10 || instant || reduceMotion()) {
       el.scrollLeft = to;
       return;
     }
@@ -220,6 +238,21 @@ function smoothRowScrollTo(el: HTMLElement, to: number) {
 
 export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
   try {
+    // Bấm mới hủy retry của lần trước (kẻo cuộn chồng)
+    try {
+      if (scrollRetryTimer) { window.clearTimeout(scrollRetryTimer); scrollRetryTimer = 0; }
+    } catch {}
+    // Navbar / bottom-nav fixed luôn hiện trên màn hình: focus đi trong đó thì
+    // KHÔNG cuộn gì cả. Trước đây mỗi phát bấm giật trang lên vài px (topSafe)
+    // làm hero banner phía dưới giật theo.
+    try {
+      let q: HTMLElement | null = el;
+      while (q && q !== document.body && q !== document.documentElement) {
+        if (q.id === 'qtb-navbar' || q.id === 'mobile-bottom-nav') return;
+        q = q.parentElement;
+      }
+    } catch {}
+    const instant = _depth === 0 ? shouldInstantScroll() : false;
     const r = el.getBoundingClientRect();
     const vh = window.innerHeight || 800;
     // Dọc: ưu tiên khung scroll trong GẦN NHẤT mà ĐỦ CHỖ chứa dy
@@ -291,20 +324,24 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
       }
       if (picked) {
         setLastTvMove(`scroll inner ${picked.tagName}.${String(picked.className || '').slice(0, 30)} dy=${Math.round(dy)} -> ${describeEl(el)}`);
-        smoothVertScrollTo(picked, picked.scrollTop + Math.round(dy));
+        smoothVertScrollTo(picked, picked.scrollTop + Math.round(dy), instant);
       } else {
         if (scrollers.length) {
           setLastTvMove(`scroll window (inners full) dy=${Math.round(dy)} -> ${describeEl(el)}`);
         } else {
           setLastTvMove(`scroll window dy=${Math.round(dy)} -> ${describeEl(el)}`);
         }
-        smoothWindowScrollBy(dy);
+        smoothWindowScrollBy(dy, instant);
       }
       // Lưới an toàn: tween có thể bị hủy (bấm dồn) hoặc RAF rớt frame ->
       // sau 320ms mà target vẫn ngoài màn hình thì cuộn lại 1 lần duy nhất.
       if (_depth === 0) {
         const target = el;
-        window.setTimeout(() => {
+        try {
+          if (scrollRetryTimer) window.clearTimeout(scrollRetryTimer);
+        } catch {}
+        scrollRetryTimer = window.setTimeout(() => {
+          scrollRetryTimer = 0;
           try {
             if (document.activeElement !== target) return;
             const r2 = target.getBoundingClientRect();
@@ -326,6 +363,7 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
           smoothRowScrollTo(
             p,
             Math.max(0, Math.round(p.scrollLeft + (r.left - pr.left) - (pr.width - r.width) / 2)),
+            instant,
           );
         }
       } catch {}
@@ -489,12 +527,40 @@ function focusIntermediateAbove(active: HTMLElement): boolean {
 export function focusNearest(dir: TvDirection): boolean {
   try {
     const active = document.activeElement as HTMLElement | null;
-    const pool = getFocusable();
+    let pool = getFocusable();
     if (!pool.length) return false;
     if (!active || active === document.body) {
       ensureTvFocus();
       return true;
     }
+    // Player fullscreen đang mở: NHỐT focus trong player. Bấm loạn D-pad cũng
+    // không lọt ra navbar/modal nền (bug: Enter kích hoạt nút nền dù player che).
+    try {
+      const playerRoot = document.getElementById('gau-player-root');
+      if (playerRoot) {
+        if (playerRoot.contains(active)) {
+          pool = pool.filter((el) => playerRoot.contains(el));
+          if (!pool.length) return true; // không có gì đi được -> nuốt phím
+        } else {
+          // Focus lọt ra ngoài bằng đường nào đó -> kéo về nút trong player
+          const back =
+            playerRoot.querySelector<HTMLElement>('[data-tv-skip-segment]') ||
+            playerRoot.querySelector<HTMLElement>('[data-tv-play]') ||
+            playerRoot.querySelector<HTMLElement>('button:not([disabled])');
+          if (back) {
+            markProgrammaticFocus();
+            setLastTvMove(`pull-into-player from ${describeEl(active)} to ${describeEl(back)}`);
+            try {
+              back.focus({ preventScroll: true } as FocusOptions);
+            } catch {
+              back.focus();
+            }
+            return true;
+          }
+          return true; // player mở mà không có nút nào -> nuốt phím
+        }
+      }
+    } catch {}
     // Modal fullscreen đang mở (detail/player-overlay...) mà focus còn kẹt
     // ở nền phía sau: lôi focus vào trong modal, không cho đi lang thang.
     try {
@@ -661,6 +727,22 @@ export function ensureTvFocus(): boolean {
   try {
     const active = document.activeElement as HTMLElement | null;
     if (active && active !== document.body && isVisible(active)) return false;
+    // Player đang mở mà focus rớt ra body: kéo về trong player, không về nền
+    try {
+      const playerRoot = document.getElementById('gau-player-root');
+      if (playerRoot) {
+        const back =
+          playerRoot.querySelector<HTMLElement>('[data-tv-skip-segment]') ||
+          playerRoot.querySelector<HTMLElement>('[data-tv-play]') ||
+          playerRoot.querySelector<HTMLElement>('button:not([disabled])');
+        if (back && isVisible(back)) {
+          markProgrammaticFocus();
+          back.focus({ preventScroll: true } as FocusOptions);
+          return true;
+        }
+        return false;
+      }
+    } catch {}
     const priority = ['#hero-play-btn', '#brand-logo-btn', '[data-tv-autofocus]'];
     for (const sel of priority) {
       const el = document.querySelector<HTMLElement>(sel);

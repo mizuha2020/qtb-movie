@@ -11,14 +11,12 @@ export const TAB_PATHS: Record<NavTab, string> = {
   cinema: '/theater',
   anime: '/anime',
   'tv-shows': '/tv-shows',
-  manga: '/comics',
   filter: '/browse',
   'my-list': '/my-list',
   history: '/history',
   offline: '/downloads',
   'tv-live': '/live-tv',
   youtube: '/youtube',
-  'xem-chung': '/watch-together',
 };
 
 const PATH_TABS: Record<string, NavTab> = Object.fromEntries(

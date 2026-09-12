@@ -181,7 +181,7 @@ export interface MyListItem {
   addedAt: number;
 }
 
-export type ActiveApp = 'cinema' | 'manga' | 'livetv';
+export type ActiveApp = 'cinema' | 'livetv';
 
 export interface YouTubeChannel {
   id: string;
@@ -272,7 +272,7 @@ export interface YouTubeCommunityPost {
   isLiked?: boolean;
 }
 
-export type NavTab = 'home' | 'series' | 'single' | 'cinema' | 'anime' | 'tv-shows' | 'manga' | 'filter' | 'my-list' | 'history' | 'offline' | 'tv-live' | 'youtube' | 'xem-chung';
+  export type NavTab = 'home' | 'series' | 'single' | 'cinema' | 'anime' | 'tv-shows' | 'filter' | 'my-list' | 'history' | 'offline' | 'tv-live' | 'youtube';
 
 export type ApiCategory = 'movie' | 'manga' | 'livetv' | 'youtube' | 'utility';
 export type ApiHealthStatus = 'live' | 'slow' | 'down';
@@ -386,12 +386,9 @@ export interface AppConfigItem {
   disabledBy?: string;
 }
 
-export type AppConfig = Record<ActiveApp, AppConfigItem>;
+export type AppConfig = Record<'cinema' | 'livetv', AppConfigItem>;
 
 export type RoomVisibility = 'public' | 'private';
-export type RoomStatus = 'active' | 'closed';
-export type RoomMemberRole = 'host' | 'member';
-export type PlaybackAction = 'play' | 'pause' | 'seek' | 'sync';
 export type ChatMessageType = 'user' | 'system';
 
 export interface WatchRoom {
