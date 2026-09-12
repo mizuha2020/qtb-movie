@@ -48,3 +48,18 @@ export function appNavigate(to: To, opts?: NavigateOptions) {
     window.history.pushState({}, '', finalTo);
   }
 }
+
+/** Đi lùi 1 entry trong history (đóng overlay đúng thứ tự mở). */
+export function appGoBack() {
+  try {
+    if (appNav) {
+      (appNav as unknown as (delta: number) => void)(-1);
+      return;
+    }
+    if (typeof window !== 'undefined') window.history.back();
+  } catch {
+    try {
+      if (typeof window !== 'undefined') window.history.back();
+    } catch {}
+  }
+}

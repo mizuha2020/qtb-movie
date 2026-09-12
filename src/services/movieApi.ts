@@ -1869,6 +1869,19 @@ export const movieApi = {
     }
   },
 
+  // Nguồn HLS thật (có link m3u8) — player chính GauPlayer chỉ phát được HLS.
+  // Nguồn embed-only (vd NguonC chỉ trả `embed`, không có `m3u8`) vẫn xem được
+  // qua iframe nhưng chất lượng/khả năng tua kém hơn nên chỉ làm fallback.
+  hasM3u8Episodes(episodes: EpisodeServer[]): boolean {
+    try {
+      return episodes.some((s) =>
+        (s.server_data || []).some((ep) => !!ep.link_m3u8),
+      );
+    } catch {
+      return false;
+    }
+  },
+
   async getMovieDetail(slug: string, preferredSource?: ApiSource): Promise<MovieDetailResponse> {
     if (!slug) throw new Error('Mã phim không hợp lệ');
     const cacheKey = `detail:${slug}:${preferredSource || 'any'}`;
@@ -1889,8 +1902,11 @@ export const movieApi = {
         } catch {}
         return null;
       };
-      // Race: nguồn nào PLAYABLE trước thì thắng; giữ lại nguồn đầu có movie
-      // để fallback nếu không thằng nào playable.
+      // Race: ưu tiên nguồn có M3U8 thật (player chính phát HLS).
+      // Nguồn embed-only (vd NguonC) về trước cũng chỉ giữ làm fallback.
+      // Bound 2.5s: quá hạn mà có fallback thì phát ngay (perceived performance),
+      // khỏi đợi nguồn chậm — M3U8 thường về trong <2.5s nên ít khi rớt vào nhánh này.
+      // Giữ lại nguồn đầu có movie để fallback nếu không thằng nào playable.
       const pending = new Map<number, Promise<{ i: number; data: any }>>();
       const allSources: Src[] = [...sources, 'proxy'];
       allSources.forEach((src, i) => {
@@ -1901,18 +1917,44 @@ export const movieApi = {
             .catch(() => ({ i, data: null })),
         );
       });
+      let fallbackTimer: ReturnType<typeof setTimeout> | null = null;
+      const fallbackTimeout = new Promise<null>((res) => {
+        fallbackTimer = setTimeout(() => res(null), 2500);
+      });
+      const clearFallbackTimer = () => {
+        if (fallbackTimer) { clearTimeout(fallbackTimer); fallbackTimer = null; }
+      };
       let fallback: { movie: Movie; episodes: EpisodeServer[]; msg: string } | null = null;
+      let timerArmed = true;
+      const toResult = (p: { movie: Movie; episodes: EpisodeServer[]; msg: string }) => {
+        clearFallbackTimer();
+        return { status: true as const, msg: p.msg, movie: p.movie, episodes: p.episodes };
+      };
       while (pending.size > 0) {
-        const { i, data } = await Promise.race(pending.values());
+        const racers: Promise<{ i: number; data: any } | null>[] = [...pending.values()];
+        if (timerArmed) racers.push(fallbackTimeout);
+        const res = await Promise.race(racers);
+        if (!res) {
+          // Hết 2.5s: có fallback thì phát ngay, chưa có gì thì đợi tiếp
+          timerArmed = false;
+          if (fallback) return toResult(fallback);
+          continue;
+        }
+        const { i, data } = res;
         pending.delete(i);
         const src = allSources[i];
         const parsed = this.parseDetailData(data, (src === 'proxy' ? 'kkphim' : src) as ApiSource);
         if (!parsed) continue;
+        if (this.hasM3u8Episodes(parsed.episodes)) {
+          return toResult(parsed);
+        }
         if (this.hasPlayableEpisodes(parsed.episodes)) {
-          return { status: true, msg: parsed.msg, movie: parsed.movie, episodes: parsed.episodes };
+          if (!fallback) fallback = parsed;
+          continue;
         }
         if (!fallback) fallback = parsed;
       }
+      clearFallbackTimer();
       if (fallback) {
         return { status: true, msg: fallback.msg, movie: fallback.movie, episodes: fallback.episodes };
       }

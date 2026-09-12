@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import Hls from 'hls.js';
-import { Play, Pause, Volume2, VolumeX, Maximize, Minimize, Settings, PictureInPicture2, X, RotateCcw, RotateCw, SkipForward, SkipBack, List, Server, Sun, ChevronDown, FastForward, Lock } from 'lucide-react';
+import { Play, Pause, Settings, Captions, X, RotateCcw, RotateCw, SkipForward, SkipBack, List, ChevronDown, FastForward, Lock } from 'lucide-react';
 import { EpisodeServer, Movie, MovieEpisode, Account, UserProfile } from '../types';
 import { getMirrorUrls } from '../utils/mirrorUrls';
 import { loadCleanedM3u8Url, revokeBlobUrl } from '../utils/m3u8Cleaner';
@@ -8,8 +8,8 @@ import { getFullApiUrl, verifyBackendUrl } from '../services/apiConfig';
 import { resolveImdbId } from '../utils/introResolve';
 import { presenceService } from '../services/presenceService';
 import { Capacitor } from '@capacitor/core';
-import { enterNativePip, setNativeVideoPlaying, checkNativePipSupported, setImmersiveMode, isNativeAndroidApp } from '../utils/nativeVideoPlayer';
-import { focusNearest, isTvModeActive } from '../utils/tvRemote';
+import { setNativeVideoPlaying, setImmersiveMode, isNativeAndroidApp } from '../utils/nativeVideoPlayer';
+import { focusNearest, isTvModeActive, markProgrammaticFocus } from '../utils/tvRemote';
 import { useTvMode } from '../hooks/useTvMode';
 import { getCachedCleaned } from '../utils/m3u8Cleaner';
 
@@ -36,6 +36,66 @@ function isWeakPlaybackDevice(): boolean {
 
 function isNativeAndroid(): boolean {
   try { return isNativeAndroidApp(); } catch { return false; }
+}
+
+/** Seek Mode kiểu Netflix (TV filmstrip): số thumbnail + bước nhảy mỗi thumbnail. */
+const SEEK_STRIP_N = 5;
+const SEEK_STEP_SEC = 30;
+
+/** Dựng dải mốc giờ cho filmstrip: clamp trong [0, duration], bỏ trùng. */
+function buildSeekTimes(start: number, duration: number): number[] {
+  const d = duration > 0 ? duration : 0;
+  const arr: number[] = [];
+  for (let i = 0; i < SEEK_STRIP_N; i++) {
+    const t = Math.max(0, Math.min(d > 0 ? d - 0.5 : 0, start + i * SEEK_STEP_SEC));
+    if (!arr.some((x) => Math.abs(x - t) < 1)) arr.push(t);
+  }
+  return arr.length ? arr : [0];
+}
+
+/** Chụp 1 frame của video vào canvas ẩn, lưu cache theo bucket 2s (chung với preview). */
+function storeThumbFromVideo(
+  el: HTMLVideoElement | null,
+  canvas: HTMLCanvasElement | null,
+  cache: Map<number, string>,
+  t: number,
+): boolean {
+  try {
+    if (!el || !canvas || !el.videoWidth) return false;
+    canvas.width = 320;
+    canvas.height = 180;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return false;
+    (ctx as any).imageSmoothingEnabled = true;
+    (ctx as any).imageSmoothingQuality = 'high';
+    ctx.drawImage(el, 0, 0, 320, 180);
+    const url = canvas.toDataURL('image/jpeg', 0.7);
+    if (cache.size > 120) cache.clear();
+    cache.set(Math.floor(t / 2), url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Seek video preview tới mốc giờ rồi đợi frame (timeout để không kẹt hàng đợi). */
+function waitPreviewFrame(pv: HTMLVideoElement, t: number, duration: number, timeoutMs = 1500): Promise<void> {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      try { pv.removeEventListener('seeked', onS); } catch {}
+      resolve();
+    };
+    const onS = () => finish();
+    try { pv.addEventListener('seeked', onS); } catch { finish(); return; }
+    try {
+      const max = duration > 0 ? duration - 0.5 : t;
+      pv.currentTime = Math.max(0, Math.min(Math.max(0, max), t));
+    } catch { finish(); return; }
+    window.setTimeout(finish, timeoutMs);
+  });
 }
 
 type IntroSegment = { start_sec: number; end_sec: number; start_ms: number; end_ms: number; confidence?: number; submission_count?: number } | null;
@@ -68,6 +128,8 @@ interface GauPlayerProps {
   initialTime?: number;
   currentAccount?: Account | null;
   activeProfile?: UserProfile | null;
+  /** Đang chờ source nền (mở player ngay kiểu Netflix): hiện shell + poster, chưa phát */
+  isResolvingSource?: boolean;
 }
 
 function getAdCleanUrl(raw: string): string {
@@ -102,6 +164,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   initialTime = 0,
   currentAccount,
   activeProfile,
+  isResolvingSource = false,
 }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -109,6 +172,9 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   const isTv = useTvMode();
   const onBackRef = useRef(onBack);
   onBackRef.current = onBack;
+  // Ref đồng bộ cho handler keydown (đăng ký 1 lần) khi đang chờ source
+  const isResolvingRef = useRef(false);
+  isResolvingRef.current = isResolvingSource;
 
   // ui state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -124,7 +190,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   const [isMuted, setIsMuted] = useState(() => {
     try { return localStorage.getItem('gau_muted') === '1'; } catch { return false; }
   });
-  const [isFullscreen, setIsFullscreen] = useState(false);
   const [showControls, setShowControls] = useState(true);
   const [isLoading, setIsLoading] = useState(true);
   // Giai đoạn load (D3): source -> stream -> buffering -> '' (đang phát)
@@ -136,7 +201,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   const [showSettings, setShowSettings] = useState(false);
   const [showServerMenu, setShowServerMenu] = useState(false);
   const [showEpisodes, setShowEpisodes] = useState(false);
-  const [isPip, setIsPip] = useState(false);
   // ---- Mobile / tablet UX ----
   const [isTouchDevice] = useState<boolean>(() => {
     try {
@@ -154,16 +218,23 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   });
   const [isLocked, setIsLocked] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
+  // Nguồn embed-only (vd NguonC chỉ có link_embed, không có m3u8): phát qua iframe
+  // thay vì báo "chưa có dữ liệu phát" (giống SimplePlayer).
+  const [useEmbed, setUseEmbed] = useState(false);
   // Chế độ khung hình: false = Fit (contain, đủ hình), true = Fill (cover, lấp màn hình)
   const [fillMode, setFillMode] = useState(false);
   const pinchRef = useRef<{ startDist: number } | null>(null);
   const saveProgressRef = useRef(onSaveProgress);
   saveProgressRef.current = onSaveProgress;
+  // smartSeek khai báo phía dưới — mirror qua ref để seek callbacks dùng trước không dính TDZ
+  const smartSeekRef = useRef<(t: number) => void>(() => {});
+  // resetControlsTimer cũng khai báo phía dưới — tương tự
+  const resetControlsTimerRef = useRef<() => void>(() => {});
 
   // Presence + analytics: báo admin ai đang xem phim gì (_GauPlayer là player chính,
   // SimplePlayer đã không còn dùng nên pipeline userStats/lịch sử bị thiếu phim).
   useEffect(() => {
-    if (!currentAccount) return;
+    if (!currentAccount || isResolvingSource) return;
     presenceService.startSession({
       accountId: currentAccount.id || currentAccount.username || 'user',
       accountDisplayName: currentAccount.displayName || currentAccount.username || 'Khán Giả Phim',
@@ -180,16 +251,10 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     return () => {
       presenceService.stopSession();
     };
-  }, [movie.slug, movie.name, currentEpisode.slug, currentEpisode.name, currentServer.server_name, currentAccount, activeProfile]);
+  }, [movie.slug, movie.name, currentEpisode.slug, currentEpisode.name, currentServer.server_name, currentAccount, activeProfile, isResolvingSource]);
   const isLockedRef = useRef(false);
   isLockedRef.current = isLocked;
   const [speedBoost, setSpeedBoost] = useState(false);
-  // APK Android: mặc định hiện nút PiP luôn (manifest đã khai báo support).
-  // Chỉ ẩn khi native check trả về false *rõ ràng* — còn lỗi bridge thì giữ hiện
-  // (trước đây catch -> false nên nút biến mất hẳn trên APK).
-  const [pipSupported, setPipSupported] = useState<boolean>(() => {
-    try { return isNativeAndroid(); } catch { return false; }
-  });
   const [nativeImmersive, setNativeImmersive] = useState(false);
   const lastTapRef = useRef<{ time: number; x: number; y: number } | null>(null);
   const singleTapTimer = useRef<number | null>(null);
@@ -244,6 +309,20 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   const episodeBtnRef = useRef<HTMLButtonElement | null>(null);
   const serverBtnRef = useRef<HTMLButtonElement | null>(null);
   const settingsBtnRef = useRef<HTMLButtonElement | null>(null);
+  // TV remote: nút skip intro / tập tiếp theo (ưu tiên focus khi vừa hiện)
+  const skipSegmentBtnRef = useRef<HTMLButtonElement | null>(null);
+  // TV Seek Mode (filmstrip kiểu Netflix): actualTime (video thật, đứng yên) và
+  // previewTime (thumbnail đang focus) tách riêng — chỉ OK mới gán actual = preview.
+  const [seekMode, setSeekMode] = useState(false);
+  const [seekWindowStart, setSeekWindowStart] = useState(0);
+  const [seekFocusIdx, setSeekFocusIdx] = useState(0);
+  const [seekTick, setSeekTick] = useState(0); // re-render khi thumbnail mới về
+  const seekModeRef = useRef(false);
+  const seekWindowRef = useRef(0);
+  const seekFocusRef = useRef(0);
+  const seekActualRef = useRef(0);
+  const seekWasPlayingRef = useRef(false);
+  const seekGenRef = useRef(0); // hủy hàng đợi capture cũ khi cửa sổ đổi/thoát
 
   const episodeIndex = useMemo(() => {
     return currentServer.server_data.findIndex(e => e.slug === currentEpisode.slug);
@@ -264,6 +343,8 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   // 3) TMDB search theo origin_name/name (+year) -> external_ids (phim thiếu cả 2 id như Hồ Tâm)
   // 4) proxy backend cold-start 502/timeout -> retry 1 lần sau 1.5s rồi mới bỏ.
   useEffect(() => {
+    // Đang chờ source nền: chưa có tập thật, bỏ qua resolving intro
+    if (isResolvingSource) return;
     const season = Number((movie as any)?.tmdb?.season) > 0 ? Number((movie as any).tmdb.season) : 1;
     let epNum = NaN;
     const m = String(currentEpisode.name || '').match(/\d+/);
@@ -332,7 +413,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       }
     })();
     return () => { cancelled = true; window.clearTimeout(timeoutId); try { controller.abort(); } catch {} };
-  }, [(movie as any)?.imdb?.id, (movie as any)?.tmdb?.id, (movie as any)?.tmdb?.season, (movie as any)?.slug, (movie as any)?.name, (movie as any)?.origin_name, (movie as any)?.year, currentEpisode.slug, currentEpisode.name, currentServer]);
+  }, [(movie as any)?.imdb?.id, (movie as any)?.tmdb?.id, (movie as any)?.tmdb?.season, (movie as any)?.slug, (movie as any)?.name, (movie as any)?.origin_name, (movie as any)?.year, currentEpisode.slug, currentEpisode.name, currentServer, isResolvingSource]);
 
   const handleSkipSegment = useCallback((type: 'intro' | 'recap' | 'outro') => {
     const v = videoRef.current;
@@ -352,9 +433,136 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       try { v.currentTime = t; } catch {}
       setCurrentTime(t);
     }
-    // NOTE: bỏ qua intro/recap là nhảy có chủ đích (điểm đến ngoài buffer là
-    // bình thường) nên set trực tiếp, không qua smartSeek.
+  // NOTE: bỏ qua intro/recap là nhảy có chủ đích (điểm đến ngoài buffer là
+  // bình thường) nên set trực tiếp, không qua smartSeek.
   }, [segments, nextEpisode, currentServer, onSelectEpisode]);
+
+  // ---- TV Seek Mode (filmstrip): capture thumbnail cho dải mốc giờ hiện tại ----
+  // Chạy nền theo hàng đợi, từng mốc một (đợi 'seeked'/timeout). Đổi cửa sổ hoặc
+  // thoát mode là tăng generation để hủy lượt cũ. Frame lưu vào previewFrameCache.
+  const queueSeekCaptures = useCallback((start: number, d: number) => {
+    const gen = ++seekGenRef.current;
+    const times = buildSeekTimes(start, d);
+    (async () => {
+      const pv = previewVideoRef.current;
+      if (!pv) return;
+      // Đợi preview engine gắn xong (setup effect chạy sau commit) tối đa ~4s
+      for (let w = 0; w < 40; w++) {
+        if (seekGenRef.current !== gen) return;
+        try {
+          if (previewHlsRef.current || (pv as any).readyState >= 1) break;
+        } catch {}
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      for (const t of times) {
+        if (seekGenRef.current !== gen) return;
+        if (previewFrameCache.current.has(Math.floor(t / 2))) continue;
+        try {
+          await waitPreviewFrame(pv, t, d);
+        } catch {}
+        if (seekGenRef.current !== gen) return;
+        setSeekTick((x) => x + 1);
+      }
+    })();
+  }, []);
+
+  // Vào Seek Mode: đóng băng actualTime, pause video, dựng cửa sổ 5 thumbnails
+  // quanh vị trí hiện tại, focus vào mốc gần nhất. Video chính KHÔNG seek.
+  const enterSeekMode = useCallback(() => {
+    const v = videoRef.current;
+    const d = (v?.duration && isFinite(v.duration) ? v.duration : 0) || duration;
+    if (!v || !d || useEmbed) return false;
+    const actual = v.currentTime || 0;
+    seekActualRef.current = actual;
+    seekWasPlayingRef.current = !v.paused;
+    if (!v.paused) v.pause();
+    const start = Math.max(
+      0,
+      Math.min(actual - 2 * SEEK_STEP_SEC, Math.max(0, d - (SEEK_STRIP_N - 1) * SEEK_STEP_SEC)),
+    );
+    const times = buildSeekTimes(start, d);
+    let fi = 0;
+    let best = Infinity;
+    times.forEach((t, i) => {
+      const dd = Math.abs(t - actual);
+      if (dd < best) { best = dd; fi = i; }
+    });
+    seekWindowRef.current = start;
+    seekFocusRef.current = fi;
+    setSeekWindowStart(start);
+    setSeekFocusIdx(fi);
+    seekModeRef.current = true;
+    setSeekMode(true);
+    // Frame hiện tại làm thumbnail giữa ngay lập tức (khỏi đợi preview engine)
+    try {
+      if (storeThumbFromVideo(v, previewCanvasRef.current, previewFrameCache.current, actual)) {
+        setSeekTick((x) => x + 1);
+      }
+    } catch {}
+    queueSeekCaptures(start, d);
+    resetControlsTimerRef.current();
+    return true;
+  }, [duration, useEmbed, queueSeekCaptures]);
+
+  // Dời focus previewTime (video chính đứng yên tuyệt đối)
+  const moveSeekFocus = useCallback((dir: 'left' | 'right') => {
+    const v = videoRef.current;
+    const d = (v?.duration && isFinite(v.duration) ? v.duration : 0) || duration;
+    if (!d || !seekModeRef.current) return;
+    const start = seekWindowRef.current;
+    const times = buildSeekTimes(start, d);
+    const fi = Math.min(seekFocusRef.current, times.length - 1);
+    const prevT = times[fi] ?? seekActualRef.current;
+    if (dir === 'right') {
+      if (fi >= times.length - 1 && times[times.length - 1] >= d - 1) return; // hết phim
+    } else {
+      if (fi <= 0 && start <= 0) return; // đầu phim
+    }
+    // Trượt cửa sổ khi chạm biên, không thì đi trong cửa sổ
+    let nextStart = start;
+    if (dir === 'right' && fi >= times.length - 1) nextStart = start + SEEK_STEP_SEC;
+    if (dir === 'left' && fi <= 0) nextStart = Math.max(0, start - SEEK_STEP_SEC);
+    const nt = buildSeekTimes(nextStart, d);
+    // Focus vào mốc kề theo hướng đi (kể cả khi trượt cửa sổ)
+    const target = prevT + (dir === 'right' ? SEEK_STEP_SEC : -SEEK_STEP_SEC);
+    let nfi = 0;
+    let nbest = Infinity;
+    nt.forEach((t, i) => {
+      const dd = Math.abs(t - target);
+      if (dd < nbest) { nbest = dd; nfi = i; }
+    });
+    seekWindowRef.current = nextStart;
+    seekFocusRef.current = nfi;
+    setSeekWindowStart(nextStart);
+    setSeekFocusIdx(nfi);
+    queueSeekCaptures(nextStart, d);
+    resetControlsTimerRef.current();
+  }, [duration, queueSeekCaptures]);
+
+  // OK: actualTime = previewTime, thoát mode, phát tiếp
+  const commitSeek = useCallback(() => {
+    const v = videoRef.current;
+    const d = (v?.duration && isFinite(v.duration) ? v.duration : 0) || duration;
+    const times = buildSeekTimes(seekWindowRef.current, d);
+    const t = times[Math.min(seekFocusRef.current, times.length - 1)] ?? seekActualRef.current;
+    seekGenRef.current++;
+    seekModeRef.current = false;
+    setSeekMode(false);
+    // smartSeek khai báo sau (tránh TDZ) nên gọi qua ref
+    if (v && d) smartSeekRef.current(t);
+    if (v && seekWasPlayingRef.current) v.play().catch(() => {});
+    resetControlsTimerRef.current();
+  }, [duration]);
+
+  // Back: hủy, KHÔNG đổi currentTime, thoát mode, phát tiếp chỗ cũ
+  const cancelSeek = useCallback(() => {
+    const v = videoRef.current;
+    seekGenRef.current++;
+    seekModeRef.current = false;
+    setSeekMode(false);
+    if (v && seekWasPlayingRef.current) v.play().catch(() => {});
+    resetControlsTimerRef.current();
+  }, []);
 
   // Netflix-style auto next: one 3s timer + button fill animation driven by the
   // same clock (Web Animations API), so the fill hits 100% exactly when we advance.
@@ -372,6 +580,39 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     return () => window.clearTimeout(t);
   }, [activeSegment, nextEpisode, autoNextEnabled, currentEpisode.slug, currentServer, onSelectEpisode]);
 
+  // TV remote: nút Skip intro / Bỏ qua tóm tắt / Tập tiếp theo vừa hiện thì
+  // ưu tiên focus ngay để bấm OK là nhảy, khỏi mò D-pad (Netflix-style).
+  // Chỉ trên tv-mode; hết segment (nút unmount) thì trả focus về nút play.
+  useEffect(() => {
+    if (!activeSegment || isLocked || useEmbed) return;
+    let tv = false;
+    try { tv = document.documentElement.classList.contains('tv-mode'); } catch {}
+    if (!tv) return;
+    const t = window.setTimeout(() => {
+      try {
+        const btn = skipSegmentBtnRef.current;
+        if (btn && document.contains(btn)) {
+          try { markProgrammaticFocus(); } catch {}
+          btn.focus({ preventScroll: true } as FocusOptions);
+        }
+      } catch {}
+    }, 150); // box TV render chậm, focus ngay dễ trượt
+    return () => {
+      window.clearTimeout(t);
+      try {
+        const a = document.activeElement as HTMLElement | null;
+        if (a && a.hasAttribute?.('data-tv-skip-segment')) {
+          const play = containerRef.current?.querySelector<HTMLButtonElement>('[data-tv-play]');
+          const target = play || containerRef.current;
+          if (target) {
+            try { markProgrammaticFocus(); } catch {}
+            target.focus({ preventScroll: true } as FocusOptions);
+          }
+        }
+      } catch {}
+    };
+  }, [activeSegment, isLocked, useEmbed, currentEpisode.slug]);
+
   const toggleAutoNext = useCallback(() => {
     setAutoNextEnabled(prev => {
       const next = !prev;
@@ -388,18 +629,21 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         setShowControls(false);
         // TV: focus đang nằm trên nút sắp ẩn (opacity-0) -> remote bấm tiếp sẽ "mất hút"
         // + WebView vẽ viền focus mặc định (vàng) lên nút ẩn. Chuyển focus về khung player.
+        // Ngoại lệ: nút skip intro / tập tiếp theo vẫn hiện ngoài overlay -> giữ nguyên.
         try {
           if (document.documentElement.classList.contains('tv-mode')) {
             const root = containerRef.current;
             const a = document.activeElement as HTMLElement | null;
-            if (root && a && a !== root && root.contains(a)) {
+            if (root && a && a !== root && root.contains(a) && !a.hasAttribute?.('data-tv-skip-segment')) {
               root.focus({ preventScroll: true } as FocusOptions);
             }
           }
         } catch {}
       }
-    }, 5000);
+    }, 4000);
   }, [showSettings, showServerMenu, showEpisodes]);
+
+  resetControlsTimerRef.current = resetControlsTimer;
 
   // Toggle hiện/ẩn controls cho mobile (không ép hiện lại như resetControlsTimer)
   const toggleLock = useCallback(() => {
@@ -439,17 +683,18 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         setShowControls(false);
         // TV: giống resetControlsTimer — dời focus khỏi nút sắp ẩn về khung player
         // để remote bấm tiếp không "mất hút" + WebView không vẽ viền vàng lên nút ẩn.
+        // Ngoại lệ: nút skip intro / tập tiếp theo vẫn hiện ngoài overlay -> giữ nguyên.
         try {
           if (document.documentElement.classList.contains('tv-mode')) {
             const root = containerRef.current;
             const a = document.activeElement as HTMLElement | null;
-            if (root && a && a !== root && root.contains(a)) {
+            if (root && a && a !== root && root.contains(a) && !a.hasAttribute?.('data-tv-skip-segment')) {
               root.focus({ preventScroll: true } as FocusOptions);
             }
           }
         } catch {}
       }
-    }, 5000);
+    }, 4000);
   }, [showSettings, showServerMenu, showEpisodes]);
 
   const capturePreviewFrame = useCallback(() => {
@@ -500,8 +745,10 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
 
   // preview hls setup: MUST use the same client-cleaned playlist as main player,
   // otherwise thumbnails show ad frames that don't exist in cleaned playback.
-  // TV mode: TẮT HẲN preview video (2 HLS + 2 decoder quá nặng cho box yếu):
-  // tooltip chỉ hiện giờ, không ảnh.
+  // Preview thumbnail: CHỈ desktop (pointer fine) + lúc TV Seek Mode cần filmstrip.
+  // TV thường tắt (2 HLS + 2 decoder quá nặng cho box yếu); mobile/touch cũng tắt
+  // (đỡ 1 HLS instance + tốn data/pin) — tooltip vẫn hiện giờ giấc.
+  // Seek Mode TV bật riêng instance transient, thoát mode là destroy.
   useEffect(() => {
     const pv = previewVideoRef.current;
     if (!pv || !currentEpisode.link_m3u8) return;
@@ -510,11 +757,18 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     previewFrameCache.current.clear();
     lastPreviewTarget.current = -1;
     setPreviewImg(null);
-    let isTvPreviewOff = false;
+    let previewOff = false;
     try {
-      isTvPreviewOff = document.documentElement.classList.contains('tv-mode');
+      previewOff = document.documentElement.classList.contains('tv-mode');
+      if (!previewOff && typeof window !== 'undefined') {
+        previewOff =
+          ('ontouchstart' in window) ||
+          (navigator.maxTouchPoints > 0) ||
+          !!window.matchMedia?.('(pointer: coarse)').matches;
+      }
     } catch {}
-    if (isTvPreviewOff) return;
+    // TV Seek Mode là ngoại lệ duy nhất được bật preview (lấy thumbnail filmstrip)
+    if (previewOff && !seekMode) return;
     const directRaw = getMirrorUrls(currentEpisode.link_m3u8)[0];
     if (!directRaw) return;
     let previewBlobs: string[] = [];
@@ -567,7 +821,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       revokeBlobUrl(previewBlobs);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentEpisode.link_m3u8, capturePreviewFrame, isTv]);
+  }, [currentEpisode.link_m3u8, capturePreviewFrame, isTv, seekMode]);
 
   // D1: đang xem tập N thì chuẩn bị sẵn master + bản clean của tập N+1
   // (chỉ metadata/playlist vài KB, KHÔNG tải video). Bấm Next là phát ngay.
@@ -593,11 +847,27 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
 
   // hls setup - single instance only, no preview video
   useEffect(() => {
+    // Đang chờ source nền (mở player ngay): giữ shell + spinner, không báo lỗi
+    if (isResolvingSource) {
+      setIsLoading(true);
+      setLoadStage('source');
+      setErrorMsg(null);
+      return;
+    }
     if (!currentEpisode.link_m3u8) {
+      // Nguồn embed-only (vd NguonC): phát qua iframe thay vì báo lỗi
+      if (currentEpisode.link_embed) {
+        if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+        setUseEmbed(true);
+        setErrorMsg(null);
+        setIsLoading(false);
+        return;
+      }
       setErrorMsg('Tập phim này chưa có dữ liệu phát. Vui lòng chọn server hoặc tập khác.');
       setIsLoading(false);
       return;
     }
+    setUseEmbed(false);
 
     const video = videoRef.current;
     if (!video) return;
@@ -640,7 +910,16 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       const other = allServers.find(s => s.server_name !== currentServer.server_name);
       if (other) {
         const ep = other.server_data.find(e => e.slug === currentEpisode.slug) || other.server_data[0];
-        if (ep) { onSelectEpisode(ep, other, video.currentTime || 0); return; }
+        // Chỉ auto-chuyển server khi tập bên đó có HLS thật; tập embed-only
+        // thì ở lại và rớt xuống iframe bên dưới (chuyển qua cũng lỗi tiếp).
+        if (ep?.link_m3u8) { onSelectEpisode(ep, other, video.currentTime || 0); return; }
+      }
+      // HLS chết hết nhưng còn link_embed (nguồn embed-only) -> phát iframe
+      if (currentEpisode.link_embed) {
+        setUseEmbed(true);
+        setErrorMsg(null);
+        setIsLoading(false);
+        return;
       }
       setErrorMsg('Không thể tải luồng phát HLS. Vui lòng chọn server khác.');
       setIsLoading(false);
@@ -665,41 +944,79 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         capLevelToPlayerSize: true,
       });
       hlsRef.current = hls;
-      // Ưu tiên TTFF: phát direct NGAY, clean chạy nền + cache cho lần sau.
-      // KHÔNG swap playlist giữa playback (reset buffer/lệch giờ).
-      // Cache hit (đổi tập rồi quay lại) -> phát bản sạch ngay từ đầu.
+      // Chặn QC ngay từ frame đầu: đợi bản clean xong mới loadSource (tối đa 5s,
+      // mạng VN thường <1s). KHÔNG swap playlist giữa playback (reset buffer/lệch
+      // giờ) nên phát direct trước là QC lọt luôn cả tập — đúng bug QC phút 15.
+      // Quá 5s chưa clean xong -> phát direct cho khỏi treo, bản clean (đã lưu
+      // cache text) áp dụng từ lần mở sau + tập sau (prefetch D1).
       const cachedClean = getCachedCleaned(rawCandidates[0]);
+      // Watchdog first-frame: quá 8s chưa có manifest/phát -> failover server
+      // kế tiếp ngay, khỏi treo spinner (failover nhanh, không đợi timeout HLS).
+      // Bắt đầu tính từ lúc loadSource thật (vì còn đợi clean), không tính lúc chờ.
+      let gotFirstFrame = false;
+      const startFirstFrameWatchdog = () => {
+        if (firstFrameTimer) window.clearTimeout(firstFrameTimer);
+        firstFrameTimer = window.setTimeout(() => {
+          if (!cancelled && !gotFirstFrame) {
+            try {
+              tryNext(hls);
+            } catch {}
+          }
+        }, 8000);
+      };
       if (cachedClean) {
         blobUrl = cachedClean.blobUrl;
         extraBlobs = [cachedClean.blobUrl, ...(cachedClean.extraBlobs || [])];
         candidates.unshift(blobUrl);
+        candidateIndex = 0;
         hls.loadSource(blobUrl);
+        startFirstFrameWatchdog();
       } else {
-        hls.loadSource(candidates[0]);
+        let settled = false;
+        const cleanWaitTimer = window.setTimeout(() => {
+          // Clean quá chậm -> phát direct kẻo treo spinner (bản clean vẫn
+          // cache text xong sau, dùng cho lần sau)
+          if (cancelled || settled) return;
+          settled = true;
+          hls.loadSource(candidates[0]);
+          startFirstFrameWatchdog();
+        }, 5000);
         loadCleanedM3u8Url(rawCandidates[0])
           .then((cleaned) => {
-            // Chỉ giữ blob để revoke đúng lúc; KHÔNG swap khi đang phát
             if (cancelled) {
+              window.clearTimeout(cleanWaitTimer);
               if (cleaned) revokeBlobUrl([cleaned.blobUrl, ...(cleaned.extraBlobs || [])]);
               return;
             }
-            if (cleaned) {
-              extraBlobs.push(cleaned.blobUrl, ...(cleaned.extraBlobs || []));
+            if (settled) {
+              // Đã phát direct do timeout: chỉ giữ blob để revoke đúng lúc
+              // (cache text bản clean đã được lưu bên trong cho lần sau)
+              if (cleaned) extraBlobs.push(cleaned.blobUrl, ...(cleaned.extraBlobs || []));
+              return;
             }
+            settled = true;
+            window.clearTimeout(cleanWaitTimer);
+            if (cleaned) {
+              blobUrl = cleaned.blobUrl;
+              extraBlobs.push(cleaned.blobUrl, ...(cleaned.extraBlobs || []));
+              candidates.unshift(blobUrl);
+              candidateIndex = 0;
+              hls.loadSource(blobUrl);
+            } else {
+              // Không có QC để cắt -> phát URL gốc, khỏi tốn blob
+              hls.loadSource(candidates[0]);
+            }
+            startFirstFrameWatchdog();
           })
-          .catch(() => {});
+          .catch(() => {
+            if (cancelled || settled) return;
+            settled = true;
+            window.clearTimeout(cleanWaitTimer);
+            hls.loadSource(candidates[0]);
+            startFirstFrameWatchdog();
+          });
       }
       hls.attachMedia(video);
-      // Watchdog first-frame: quá 8s chưa có manifest/phát -> failover server
-      // kế tiếp ngay, khỏi treo spinner (failover nhanh, không đợi timeout HLS).
-      let gotFirstFrame = false;
-      firstFrameTimer = window.setTimeout(() => {
-        if (!cancelled && !gotFirstFrame) {
-          try {
-            tryNext(hls);
-          } catch {}
-        }
-      }, 8000);
       hls.on(Hls.Events.MANIFEST_PARSED, (_, data) => {
         gotFirstFrame = true;
         if (firstFrameTimer) {
@@ -761,7 +1078,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       revokeBlobUrl([blobUrl, ...extraBlobs]);
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
     };
-  }, [currentEpisode.link_m3u8, allServers, currentServer, initialTime, onSelectEpisode, retryKey]);
+  }, [currentEpisode.link_m3u8, currentEpisode.link_embed, isResolvingSource, allServers, currentServer, initialTime, onSelectEpisode, retryKey]);
 
   const handleRetry = useCallback(() => {
     const v = videoRef.current;
@@ -900,6 +1217,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     if (!v) return;
     smartSeek(v.currentTime + s);
   }, [smartSeek]);
+  smartSeekRef.current = smartSeek;
   const toggleMute = useCallback(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -907,12 +1225,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     setIsMuted(nv);
     v.muted = nv;
   }, [isMuted]);
-  const handleVolume = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = parseFloat(e.target.value);
-    setVolume(v);
-    setIsMuted(v === 0);
-    if (videoRef.current) { videoRef.current.volume = v; videoRef.current.muted = v === 0; }
-  };
   const toggleFullscreen = useCallback(async () => {
     // APK Android: player vốn đã full màn hình -> nút này bật/tắt immersive
     // (ẩn status bar + nav bar) để có khác biệt thật sự.
@@ -949,30 +1261,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       }
     } catch {}
   }, [nativeImmersive]);
-  const handlePip = useCallback(async () => {
-    // APK: dùng native PiP (WebView thường không hỗ trợ requestPictureInPicture).
-    // Nếu native fail thì rớt xuống thử web PiP.
-    if (isNativeAndroid()) {
-      try {
-        if (await enterNativePip()) return;
-      } catch {}
-    }
-    // Web / PWA (và fallback APK): dùng browser PiP nếu được hỗ trợ (Chrome/Android + Safari/iOS)
-    const v = videoRef.current as any;
-    if (!v) return;
-    try {
-      if (document.pictureInPictureElement) await document.exitPictureInPicture();
-      else if (v.requestPictureInPicture) await v.requestPictureInPicture();
-      else if (typeof v.webkitSetPresentationMode === 'function') {
-        // Safari macOS/iOS
-        try {
-          if (v.webkitPresentationMode === 'picture-in-picture') v.webkitSetPresentationMode('inline');
-          else v.webkitSetPresentationMode('picture-in-picture');
-        } catch { v.webkitSetPresentationMode('picture-in-picture'); }
-      }
-    } catch {}
-  }, []);
-
   const showGestureToast = useCallback((text: string, sub?: string) => {
     if (gestureToastTimer.current) window.clearTimeout(gestureToastTimer.current);
     setGestureToast({ text, sub });
@@ -1209,51 +1497,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     };
   }, []);
 
-  // fullscreen + pip listeners
-  useEffect(() => {
-    const onFs = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    document.addEventListener('fullscreenchange', onFs);
-    const v = videoRef.current;
-    const onEnter = () => setIsPip(true);
-    const onLeave = () => setIsPip(false);
-    v?.addEventListener('enterpictureinpicture', onEnter);
-    v?.addEventListener('leavepictureinpicture', onLeave);
-    const onNativePip = (ev: any) => {
-      try { setIsPip(!!ev?.detail?.isPip); } catch {}
-    };
-    window.addEventListener('native-pip-change' as any, onNativePip as any);
-    return () => {
-      document.removeEventListener('fullscreenchange', onFs);
-      v?.removeEventListener('enterpictureinpicture', onEnter);
-      v?.removeEventListener('leavepictureinpicture', onLeave);
-      window.removeEventListener('native-pip-change' as any, onNativePip as any);
-    };
-  }, []);
-
-  // PiP hỗ trợ ở đâu thì hiện nút ở đó:
-  // - APK Android: LUÔN hiện nút (kể cả khi probe native fail) để user bấm được.
-  //   Bấm mà native fail thì tự rớt xuống thử web PiP.
-  // - Web / PWA: browser PiP (Chrome Android hỗ trợ, iOS Safari 14.2+ hỗ trợ)
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (isNativeAndroid()) {
-        try { await checkNativePipSupported(); } catch {}
-        if (!cancelled) setPipSupported(true);
-        return;
-      }
-      try {
-        const v = document.createElement('video') as any;
-        const stdOk = (document as any).pictureInPictureEnabled && typeof v.requestPictureInPicture === 'function';
-        const safariOk = typeof v.webkitSetPresentationMode === 'function';
-        if (!cancelled) setPipSupported(!!(stdOk || safariOk));
-      } catch { if (!cancelled) setPipSupported(false); }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
   // APK: mở player là ẩn status bar luôn (immersive), thoát player thì hiện lại.
   // Re-apply khi app focus/visible lại vì Bridge hay reset systemUI (nguyên nhân
   // status bar hiện lại sau 1 chạm).
@@ -1267,15 +1510,12 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     const reapply = () => { try { setImmersiveMode(true).catch(() => {}); } catch {} };
     const onVis = () => { if (document.visibilityState === 'visible') reapply(); };
     const onFocus = () => reapply();
-    const onPipChange = () => { /* thoát PiP -> native tự re-apply sau 200ms */ };
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('focus', onFocus);
-    window.addEventListener('native-pip-change' as any, onPipChange as any);
     return () => {
       cancelled = true;
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('focus', onFocus);
-      window.removeEventListener('native-pip-change' as any, onPipChange as any);
       try { setImmersiveMode(false).catch(() => {}); } catch {}
     };
   }, []);
@@ -1315,15 +1555,16 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   }, [resetControlsTimer]);
 
   // TV: mở player là focus ngay nút play để remote bấm OK phát/dừng được
+  // (bỏ qua khi đang chờ source nền — tập thật mount sau sẽ focus lại)
   useEffect(() => {
-    if (!isTv) return;
+    if (!isTv || isResolvingSource) return;
     const t = window.setTimeout(() => {
       try {
         containerRef.current?.querySelector<HTMLButtonElement>('[data-tv-play]')?.focus();
       } catch {}
     }, 400);
     return () => window.clearTimeout(t);
-  }, [isTv]);
+  }, [isTv, isResolvingSource]);
 
   // TV remote: mở menu tập/server/cài đặt là focus ngay item đầu/current
   // để D-pad đi được trong menu; đóng menu (bằng chuột) trả focus về nút mở.
@@ -1436,6 +1677,9 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     isDraggingRef.current = true;
     scrubWasPlayingRef.current = !v.paused;
     if (!v.paused) v.pause();
+    // Đang kéo: dừng hẳn việc tải luồng chính (kẻo tốn băng thông buffer chỗ cũ),
+    // chỉ preview thumbnail được tải. Thả tay mới seek + tải tiếp.
+    try { hlsRef.current?.stopLoad(); } catch {}
     setIsScrubbing(true);
     try { (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); } catch {}
     renderScrubPreview(pctFromClientX(e.clientX, e.currentTarget as HTMLElement), { hoverTrack: e.pointerType === 'mouse', moveProgress: true });
@@ -1456,7 +1700,9 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     setIsScrubbing(false);
     if (!v || !duration) { hideScrubPreview(); return; }
     const pct = pctFromClientX(e.clientX, e.currentTarget as HTMLElement);
-    // Commit 1 lần khi thả tay (không seek theo từng pixel lúc kéo)
+    // Commit 1 lần khi thả tay (không seek theo từng pixel lúc kéo):
+    // mở lại tải luồng chính rồi mới seek tới điểm đã chọn
+    try { hlsRef.current?.startLoad(); } catch {}
     smartSeek(pct * duration);
     if (progressBarRef.current) progressBarRef.current.style.width = `${pct * 100}%`;
     // Trả lại trạng thái phát như trước khi chạm (đang phát thì phát tiếp, pause thì giữ pause)
@@ -1468,12 +1714,14 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     // Rời chuột khi không kéo: ẩn preview + trả thanh về vị trí phát thật (kẻo kẹt khi pause)
     if (!isDraggingRef.current) hideScrubPreview(true);
   }, [hideScrubPreview]);
-  // Touch bị ngắt giữa chừng (cuộc gọi đến, vuốt hệ thống): kết thúc kéo, trả thanh + phát tiếp nếu trước đó đang phát
+  // Touch bị ngắt giữa chừng (cuộc gọi đến, vuốt hệ thống): kết thúc kéo (không commit
+  // điểm mới), trả thanh + tải tiếp luồng chính + phát tiếp nếu trước đó đang phát
   const handleScrubPointerCancel = useCallback(() => {
     if (!isDraggingRef.current) { hideScrubPreview(true); return; }
     isDraggingRef.current = false;
     setIsScrubbing(false);
     restoreProgressBar();
+    try { hlsRef.current?.startLoad(); } catch {}
     const v = videoRef.current;
     if (v && scrubWasPlayingRef.current) v.play().catch(() => {});
     hideScrubPreview();
@@ -1491,20 +1739,30 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     else if (e.key === 'End') { e.preventDefault(); smartSeek(Math.max(0, (v.duration || 0) - 1)); resetControlsTimer(); }
   }, [duration, resetControlsTimer, smartSeek]);
 
-  // Netflix TV: Back -> menu mở thì đóng menu; controls hiện thì ẩn đi;
-  // controls ẩn thì thoát. Dùng chung cho phím browser + nút Back native (App).
+  // Netflix TV: Back -> Seek Mode đang mở thì hủy seek (giữ nguyên currentTime);
+  // menu mở thì đóng menu (focus giữ ở nút menu vừa mở);
+  // controls hiện thì ẩn đi; controls ẩn thì thoát. Dùng chung cho phím
+  // browser + nút Back native (App).
   const handleTvBack = useCallback(() => {
+    if (seekModeRef.current) {
+      cancelSeek();
+      return;
+    }
     if (showSettingsRef.current || showServerMenuRef.current || showEpisodesRef.current) {
+      // Focus nút mở menu NGAY (đồng bộ, lúc panel còn mounted) rồi mới đóng —
+      // để effect đóng-menu thấy focus đã ở ngoài panel nên không giật về play.
+      try {
+        const opener = menuOpenerRef.current;
+        if (opener && document.contains(opener)) {
+          try { markProgrammaticFocus(); } catch {}
+          opener.focus({ preventScroll: true } as FocusOptions);
+        }
+      } catch {}
+      menuOpenerRef.current = null;
       setShowEpisodes(false);
       setShowServerMenu(false);
       setShowSettings(false);
       resetControlsTimer();
-      window.setTimeout(() => {
-        try {
-          (menuOpenerRef.current || containerRef.current?.querySelector<HTMLButtonElement>('[data-tv-play]'))?.focus();
-        } catch {}
-        menuOpenerRef.current = null;
-      }, 60);
       return;
     }
     if (showControlsRef.current) {
@@ -1520,7 +1778,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     } else {
       onBackRef.current();
     }
-  }, [resetControlsTimer]);
+  }, [resetControlsTimer, cancelSeek]);
   handleTvBackRef.current = handleTvBack;
 
   // Nút bấm trong hàng controls bottom (timeline slider tính riêng).
@@ -1621,8 +1879,28 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             } catch {}
           }, 150); // box TV chậm, 60ms đôi khi chưa render xong
         };
-        // Netflix TV: ←/→ CHỈ tua khi focus đang ở thanh timeline
-        // (kèm preview). Còn lại là di chuyển focus, KHÔNG tua.
+        // TV Seek Mode (filmstrip): D-pad/OK/Back do seek mode xử lý riêng,
+        // video chính đứng yên tuyệt đối cho tới khi OK commit
+        if (seekModeRef.current) {
+          if (k === 'ArrowLeft' || k === 'ArrowRight') {
+            e.preventDefault();
+            e.stopPropagation();
+            moveSeekFocus(k === 'ArrowLeft' ? 'left' : 'right');
+            return;
+          }
+          if (k === ' ' || k === 'Enter' || k === 'NumpadEnter') {
+            e.preventDefault();
+            e.stopPropagation();
+            commitSeek();
+            return;
+          }
+          // Back/Return do handleTvBack funnel (cancelSeek) — đã chặn ở trên
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        // Netflix TV: ←/→ trên timeline mở thẳng Seek Mode (filmstrip).
+        // Phát đầu vừa mở mode vừa dời focus theo hướng bấm; video chính đứng yên.
         if (k === 'ArrowLeft' || k === 'ArrowRight') {
           const ae = document.activeElement as HTMLElement | null;
           // Slider âm lượng/độ sáng: để browser chỉnh native
@@ -1632,10 +1910,14 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           }
           const scrub = ae?.closest?.('.group\\/scrub') as HTMLElement | null;
           if (!hidden && scrub) {
-            // Đang đứng trên timeline -> tua ±10s + hiện preview tại điểm mới,
-            // preview tự ẩn sau 1.5s
             e.preventDefault();
             e.stopPropagation(); // chặn handleScrubKeyDown bubble kẻo tua 2 lần
+            if (enterSeekMode()) {
+              moveSeekFocus(k === 'ArrowLeft' ? 'left' : 'right');
+              return;
+            }
+            // Fallback khi không vào được seek mode (embed/chưa có duration):
+            // tua ±10s như cũ + hiện preview tại điểm mới, preview tự ẩn sau 1.5s
             const v = videoRef.current;
             const d = (v?.duration && isFinite(v.duration) ? v.duration : 0) || duration;
             if (v && d > 0) {
@@ -1650,8 +1932,10 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           }
           // Ẩn -> chỉ mở overlay. Hiện -> đi ngang TRONG hàng nút
           // (hết hàng thì đứng yên, không nhảy lên timeline).
+          // Ngoại lệ: đang đứng trên nút skip intro / tập tiếp theo (hiện ngoài
+          // overlay) -> D-pad vẫn điều hướng bình thường, không nuốt phím.
           e.preventDefault();
-          if (hidden) {
+          if (hidden && !ae?.hasAttribute?.('data-tv-skip-segment')) {
             wakeControls();
             return;
           }
@@ -1669,9 +1953,11 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           return;
         }
         // ↑/↓: ẩn -> hiện overlay; hiện -> đi vào / di chuyển trong cụm tùy chọn.
+        // Ngoại lệ: nút skip intro / tập tiếp theo -> điều hướng bình thường.
         if (k === 'ArrowUp' || k === 'ArrowDown') {
           e.preventDefault();
-          if (hidden) {
+          const active0 = document.activeElement as HTMLElement | null;
+          if (hidden && !active0?.hasAttribute?.('data-tv-skip-segment')) {
             wakeControls();
             return;
           }
@@ -1690,9 +1976,12 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           wakeControls();
           return;
         }
-        // OK: ẩn -> chỉ đánh thức; hiện -> nút thì để browser click, card thì click tay, còn lại play/dừng.
+        // OK: ẩn -> chỉ đánh thức (trừ khi đang đứng trên nút skip intro /
+        // tập tiếp theo thì để browser click); hiện -> nút thì để browser click,
+        // card thì click tay, còn lại play/dừng.
         if (k === ' ' || k === 'Enter' || k === 'NumpadEnter') {
-          if (hidden) {
+          const activeOk = document.activeElement as HTMLElement | null;
+          if (hidden && !activeOk?.hasAttribute?.('data-tv-skip-segment')) {
             e.preventDefault();
             wakeControls();
             return;
@@ -1702,6 +1991,11 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             return; // browser tự click, không chặn
           }
           e.preventDefault();
+          // TV: OK đang đứng trên timeline -> vào Seek Mode (filmstrip) thay vì play/dừng
+          if (tv && active?.closest?.('.group\\/scrub')) {
+            e.stopPropagation();
+            if (enterSeekMode()) return;
+          }
           if (active && active.hasAttribute('data-tv-card')) {
             try {
               active.click();
@@ -1712,6 +2006,9 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           return;
         }
       }
+      // Đang chờ source nền: chỉ cho Back/Thoát (xử lý ở trên), nuốt phím còn lại
+      // vì chưa có gì để điều khiển
+      if (isResolvingRef.current) { e.preventDefault(); return; }
       if (e.key === ' ') { e.preventDefault(); togglePlay(); }
       if (!tv && e.key === 'ArrowLeft') { e.preventDefault(); skip(-10); }
       if (!tv && e.key === 'ArrowRight') { e.preventDefault(); skip(10); }
@@ -1727,7 +2024,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       if (seekFlashTimer.current) window.clearTimeout(seekFlashTimer.current);
       if (holdTimer.current) window.clearTimeout(holdTimer.current);
     };
-  }, [togglePlay, skip, toggleFullscreen, toggleMute, activeSegment, handleSkipSegment, duration, renderScrubPreview, smartSeek]);
+  }, [togglePlay, skip, toggleFullscreen, toggleMute, activeSegment, handleSkipSegment, duration, renderScrubPreview, smartSeek, enterSeekMode, moveSeekFocus, commitSeek]);
 
   return (
     <div
@@ -1751,6 +2048,37 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         onContextMenu={e => e.preventDefault()}
         style={{ touchAction: 'none', WebkitUserSelect: 'none', userSelect: 'none', WebkitTouchCallout: 'none' }}
       >
+        {useEmbed && currentEpisode.link_embed ? (
+          <div className="absolute inset-0 bg-black">
+            <iframe
+              src={currentEpisode.link_embed}
+              className="w-full h-full border-none"
+              allowFullScreen
+              sandbox="allow-same-origin allow-scripts allow-presentation allow-forms"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+              referrerPolicy="no-referrer"
+              title={movie.name}
+            />
+            <button
+              onClick={(e) => { e.stopPropagation(); onBack(); }}
+              aria-label="Thoát"
+              className="absolute top-[calc(env(safe-area-inset-top,0px)+12px)] left-3 z-50 rounded-full bg-white/10 active:bg-white/30 flex items-center justify-center border-0 w-11 h-11"
+              style={{ touchAction: 'manipulation' }}
+            >
+              <X className="w-5 h-5 text-white shrink-0" />
+            </button>
+            {currentEpisode.link_m3u8 && (
+              <button
+                onClick={(e) => { e.stopPropagation(); setUseEmbed(false); setRetryKey(k => k + 1); }}
+                className="absolute top-[calc(env(safe-area-inset-top,0px)+12px)] right-3 z-50 bg-blue-500 text-white px-4 py-2 rounded-xl text-sm font-bold"
+                style={{ touchAction: 'manipulation' }}
+              >
+                Quay lại HLS
+              </button>
+            )}
+          </div>
+        ) : (
+        <>
         <video
             ref={videoRef}
             className={`w-full h-full ${fillMode ? 'object-cover' : 'object-contain'}`}
@@ -1770,7 +2098,8 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         {/* hidden preview video + canvas for hover thumbnail - chophim smooth */}
         <video ref={previewVideoRef} muted playsInline preload="metadata" crossOrigin="anonymous" className="pointer-events-none absolute left-0 top-0 h-[2px] w-[2px] opacity-0" tabIndex={-1} aria-hidden />
         <canvas ref={previewCanvasRef} className="hidden w-0 h-0 pointer-events-none" />
-        {isLoading && (
+        </>)}
+        {!useEmbed && isLoading && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40 pointer-events-none">
             <div className="w-12 h-12 sm:w-10 sm:h-10 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
             <span className="text-xs font-semibold text-white/85 bg-black/60 px-2.5 py-1 rounded-full">
@@ -1851,6 +2180,11 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                   Đổi server ({altServerEp.server.server_name})
                 </button>
               )}
+              {!useEmbed && currentEpisode.link_embed && (
+                <button onClick={() => { setUseEmbed(true); setErrorMsg(null); setIsLoading(false); }} className="px-5 py-2.5 rounded-xl bg-white/15 active:bg-white/25 text-white text-sm font-medium transition-all min-h-[44px]" style={{ touchAction: 'manipulation' }}>
+                  Chuyển sang Embed
+                </button>
+              )}
               <button onClick={onBack} className="px-5 py-2.5 rounded-xl bg-white/10 active:bg-white/20 text-white/80 text-sm font-medium transition-all min-h-[44px]" style={{ touchAction: 'manipulation' }}>
                 Thoát
               </button>
@@ -1858,8 +2192,38 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           </div>
         )}
 
-        {/* Skip intro/recap/outro - ẩn khi khóa màn hình */}
-        {!isLocked && activeSegment && (
+        {/* Shell mở ngay kiểu Netflix: đang chờ source nền thì hiện poster +
+            spinner, che controls chết phía dưới; chỉ nút Thoát hoạt động */}
+        {isResolvingSource && (
+          <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center overflow-hidden">
+            {(movie.backdrop_url || movie.thumb_url || movie.poster_url) && (
+              <img
+                src={movie.backdrop_url || movie.thumb_url || movie.poster_url}
+                alt=""
+                aria-hidden
+                draggable={false}
+                className="absolute inset-0 w-full h-full object-cover opacity-40"
+              />
+            )}
+            <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-black/60" />
+            <button
+              onClick={(e) => { e.stopPropagation(); onBack(); }}
+              aria-label="Thoát"
+              className="absolute top-[calc(env(safe-area-inset-top,0px)+12px)] right-3 z-10 rounded-full bg-white/10 active:bg-white/30 flex items-center justify-center border-0 w-11 h-11 sm:w-8 sm:h-8"
+              style={{ touchAction: 'manipulation' }}
+            >
+              <X className="w-5 h-5 sm:w-4 sm:h-4 text-white shrink-0" />
+            </button>
+            <div className="relative z-10 flex flex-col items-center gap-3 px-6 text-center">
+              <div className="w-12 h-12 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
+              <p className="text-white text-base font-semibold truncate max-w-[80vw]">{movie.name}</p>
+              <p className="text-white/70 text-sm">Đang tìm nguồn phát...</p>
+            </div>
+          </div>
+        )}
+
+        {/* Skip intro/recap/outro - ẩn khi khóa màn hình / chế độ embed */}
+        {!useEmbed && !isLocked && activeSegment && (
           <div
             className="absolute bottom-40 sm:bottom-24 right-4 sm:right-6 z-30 pointer-events-auto"
             onTouchStart={e => { e.stopPropagation(); resetControlsTimer(); }}
@@ -1867,18 +2231,18 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             onTouchEnd={e => e.stopPropagation()}
           >
             {activeSegment === 'intro' && (
-              <button onClick={(e) => { e.stopPropagation(); handleSkipSegment('intro'); }} className="cursor-pointer flex items-center gap-2 bg-white text-black px-4 py-2.5 rounded-lg text-sm font-bold shadow-2xl hover:bg-white/90 active:scale-95 transition-all border border-black/10">
+              <button ref={skipSegmentBtnRef} data-tv-skip-segment onClick={(e) => { e.stopPropagation(); handleSkipSegment('intro'); }} className="cursor-pointer flex items-center gap-2 bg-white text-black px-4 py-2.5 rounded-lg text-sm font-bold shadow-2xl hover:bg-white/90 active:scale-95 transition-all border border-black/10">
                 <SkipForward className="w-4 h-4" /> Bỏ qua phần giới thiệu
               </button>
             )}
             {activeSegment === 'recap' && (
-              <button onClick={(e) => { e.stopPropagation(); handleSkipSegment('recap'); }} className="cursor-pointer flex items-center gap-2 bg-white text-black px-4 py-2.5 rounded-lg text-sm font-bold shadow-2xl hover:bg-white/90 active:scale-95 transition-all border border-black/10">
+              <button ref={skipSegmentBtnRef} data-tv-skip-segment onClick={(e) => { e.stopPropagation(); handleSkipSegment('recap'); }} className="cursor-pointer flex items-center gap-2 bg-white text-black px-4 py-2.5 rounded-lg text-sm font-bold shadow-2xl hover:bg-white/90 active:scale-95 transition-all border border-black/10">
                 <SkipForward className="w-4 h-4" /> Bỏ qua tóm tắt
               </button>
             )}
             {activeSegment === 'outro' && (
               nextEpisode ? (
-                <button onClick={(e) => { e.stopPropagation(); handleSkipSegment('outro'); }} className="cursor-pointer relative overflow-hidden flex items-center gap-2.5 bg-white text-black pl-4 pr-4 py-2.5 rounded-lg text-sm font-bold shadow-2xl hover:bg-white/90 active:scale-95 transition-all border border-black/10 min-w-[210px]">
+                <button ref={skipSegmentBtnRef} data-tv-skip-segment onClick={(e) => { e.stopPropagation(); handleSkipSegment('outro'); }} className="cursor-pointer relative overflow-hidden flex items-center gap-2.5 bg-white text-black pl-4 pr-4 py-2.5 rounded-lg text-sm font-bold shadow-2xl hover:bg-white/90 active:scale-95 transition-all border border-black/10 min-w-[210px]">
                   {/* Netflix-style: whole button is the progress bar, fill 0 -> 100% in 3s */}
                   {autoNextEnabled && (
                     <span ref={nextFillRef} className="absolute inset-y-0 left-0 bg-black/15" style={{ width: '0%' }} />
@@ -1887,13 +2251,66 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                   <span className="relative flex-1 text-left">Tập tiếp theo</span>
                 </button>
               ) : (
-                <button onClick={(e) => { e.stopPropagation(); handleSkipSegment('outro'); }} className="cursor-pointer flex items-center gap-2 bg-white text-black px-4 py-2.5 rounded-lg text-sm font-bold shadow-2xl hover:bg-white/90 active:scale-95 transition-all border border-black/10">
+                <button ref={skipSegmentBtnRef} data-tv-skip-segment onClick={(e) => { e.stopPropagation(); handleSkipSegment('outro'); }} className="cursor-pointer flex items-center gap-2 bg-white text-black px-4 py-2.5 rounded-lg text-sm font-bold shadow-2xl hover:bg-white/90 active:scale-95 transition-all border border-black/10">
                   <SkipForward className="w-4 h-4" /> Bỏ qua outro
                 </button>
               )
             )}
           </div>
         )}
+
+        {/* TV Seek Mode filmstrip: actualTime đứng yên, previewTime theo focus.
+            OK = seek tới mốc focus, Back = hủy giữ nguyên. */}
+        {seekMode && (() => {
+          const vv = videoRef.current;
+          const dd = (vv?.duration && isFinite(vv.duration) ? vv.duration : 0) || duration;
+          const times = buildSeekTimes(seekWindowStart, dd);
+          const fi = Math.min(seekFocusIdx, times.length - 1);
+          const previewT = times[fi] ?? 0;
+          void seekTick; // subscribe re-render khi thumbnail mới capture xong
+          return (
+            <div
+              className="absolute inset-x-0 bottom-0 z-50 pt-10 pb-[max(18px,env(safe-area-inset-bottom,0px))] px-4 bg-gradient-to-t from-black via-black/85 to-transparent"
+              onClick={(e) => e.stopPropagation()}
+              onTouchStart={(e) => e.stopPropagation()}
+              onTouchMove={(e) => e.stopPropagation()}
+              onTouchEnd={(e) => e.stopPropagation()}
+            >
+              <div className="text-center mb-3">
+                <div className="text-white text-3xl font-bold tabular-nums leading-none">{formatTime(previewT)}</div>
+                <div className="text-white/60 text-xs mt-1.5 font-medium">OK để phát từ đây • Back để hủy</div>
+              </div>
+              <div className="flex items-end justify-center gap-2 sm:gap-3">
+                {times.map((t, i) => {
+                  const img = previewFrameCache.current.get(Math.floor(t / 2));
+                  const focused = i === fi;
+                  return (
+                    <div key={`${t}-${i}`} className="flex flex-col items-center gap-1.5 transition-all duration-150">
+                      <div
+                        className={`rounded-lg overflow-hidden bg-white/10 transition-all duration-150 ${
+                          focused
+                            ? 'w-44 sm:w-56 aspect-video ring-[3px] ring-white shadow-[0_0_24px_rgba(255,255,255,0.35)] brightness-100'
+                            : 'w-28 sm:w-36 aspect-video ring-1 ring-white/20 brightness-[0.65]'
+                        }`}
+                      >
+                        {img ? (
+                          <img src={img} alt="" draggable={false} className="w-full h-full object-cover" />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <div className="w-6 h-6 border-2 border-white/30 border-t-white/80 rounded-full animate-spin" />
+                          </div>
+                        )}
+                      </div>
+                      <span className={`text-xs tabular-nums font-semibold ${focused ? 'text-white' : 'text-white/50'}`}>
+                        {formatTime(t)}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Minimal top bar like chophim */}
         <div
@@ -1925,7 +2342,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             Desktop không dùng nút giữa màn hình (play + tua đã có ở hàng bottom).
             TV: chỉ giữ nút play giữa, BỎ 2 nút tua 10s (tua bằng timeline + D-pad). */}
         {(isTouchDevice || isTv) ? (
-          !isLocked && showControls && !isLoading && !errorMsg && (
+          !isLocked && showControls && !isLoading && !errorMsg && !seekMode && (
             <div
               className="absolute inset-0 flex items-center justify-center gap-14 sm:gap-12 pointer-events-none z-20"
               onTouchStart={e => e.stopPropagation()}
@@ -2026,8 +2443,8 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
               <span className="hidden sm:block shrink-0 text-[11px] font-medium text-white/80 tabular-nums">{formatTime(duration)}</span>
             </div>
 
-            {/* Controls row: trái = play/volume (desktop) + tập trước/tiếp, phải = list/server/cài đặt/pip/fullscreen */}
-            <div className="flex items-center justify-between gap-1">
+            {/* Controls row: trái = play/tua 10s, giữa = tập trước/tiếp + số tập, phải = list/server/cài đặt/pip/fullscreen */}
+            <div className="relative flex items-center justify-between gap-1">
               <div className="flex items-center gap-0.5 sm:gap-1">
                 {/* Desktop: nút play/pause tròn trắng kiểu YouTube/Netflix web */}
                 <button
@@ -2041,81 +2458,61 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                     ? <Pause className="w-4 h-4 shrink-0" fill="currentColor" />
                     : <Play className="w-4 h-4 ml-0.5 shrink-0" fill="currentColor" />}
                 </button>
-                {/* Desktop chuột: tua -10s cạnh play (mobile dùng phím giữa màn hình + vuốt) */}
+                {/* Tua -10s (thế chỗ nút âm lượng đã bỏ) */}
                 <button
                   onClick={() => { skip(-10); resetControlsTimer(); }}
                   aria-label="Tua lại 10 giây"
                   title="Tua lại 10 giây (←)"
-                  className="hidden pointer-fine:flex tv-seek-btn rounded-full hover:bg-white/10 active:scale-95 items-center justify-center text-white w-9 h-9 shrink-0 transition"
+                  className="flex tv-seek-btn rounded-full hover:bg-white/10 active:scale-95 items-center justify-center text-white w-11 h-11 sm:w-9 sm:h-9 shrink-0 transition"
+                  style={{ touchAction: 'manipulation' }}
                 >
                   <span className="relative flex items-center justify-center">
                     <RotateCcw className="w-5 h-5 shrink-0" strokeWidth={1.75} />
                     <span className="absolute inset-0 flex items-center justify-center text-[8px] font-bold text-white tabular-nums pt-0.5">10</span>
                   </span>
                 </button>
-                {/* Desktop chuột: tua +10s cạnh play (mobile dùng phím giữa màn hình + vuốt) */}
+                {/* Tua +10s (thế chỗ nút âm lượng đã bỏ) */}
                 <button
                   onClick={() => { skip(10); resetControlsTimer(); }}
                   aria-label="Tua tới 10 giây"
                   title="Tua tới 10 giây (→)"
-                  className="hidden pointer-fine:flex tv-seek-btn rounded-full hover:bg-white/10 active:scale-95 items-center justify-center text-white w-9 h-9 shrink-0 transition"
+                  className="flex tv-seek-btn rounded-full hover:bg-white/10 active:scale-95 items-center justify-center text-white w-11 h-11 sm:w-9 sm:h-9 shrink-0 transition"
+                  style={{ touchAction: 'manipulation' }}
                 >
                   <span className="relative flex items-center justify-center">
                     <RotateCw className="w-5 h-5 shrink-0" strokeWidth={1.75} />
                     <span className="absolute inset-0 flex items-center justify-center text-[8px] font-bold text-white tabular-nums pt-0.5">10</span>
                   </span>
                 </button>
-                {/* Desktop chuột: volume mute + slider (mobile dùng phím cứng của máy) */}
-                <div className="hidden pointer-fine:flex items-center gap-0.5 group/vol">
-                  <button
-                    onClick={() => { toggleMute(); resetControlsTimer(); }}
-                    aria-label={isMuted || volume === 0 ? 'Bật tiếng (M)' : 'Tắt tiếng (M)'}
-                    title={isMuted || volume === 0 ? 'Bật tiếng (M)' : 'Tắt tiếng (M)'}
-                    className="rounded-full hover:bg-white/10 flex items-center justify-center text-white w-8 h-8 shrink-0"
-                  >
-                    {isMuted || volume === 0
-                      ? <VolumeX className="w-4 h-4 shrink-0" />
-                      : <Volume2 className="w-4 h-4 shrink-0" />}
-                  </button>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={isMuted ? 0 : volume}
-                    onChange={handleVolume}
-                    aria-label="Âm lượng"
-                    className="w-0 opacity-0 group-hover/vol:w-20 group-hover/vol:opacity-100 focus-visible:w-20 focus-visible:opacity-100 transition-all accent-white h-1 cursor-pointer"
-                  />
-                </div>
-                {currentServer.server_data.length > 1 && (
-                  <>
-                    <button
-                      onClick={() => { if (prevEpisode) { onSelectEpisode(prevEpisode, currentServer); resetControlsTimer(); } }}
-                      disabled={!prevEpisode}
-                      aria-label="Tập trước"
-                      title="Tập trước"
-                      className="rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center text-white w-11 h-11 sm:w-8 sm:h-8 disabled:opacity-30 disabled:active:bg-transparent"
-                      style={{ touchAction: 'manipulation' }}
-                    >
-                      <SkipBack className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" fill="currentColor" />
-                    </button>
-                    <button
-                      onClick={() => { if (nextEpisode) { onSelectEpisode(nextEpisode, currentServer); resetControlsTimer(); } }}
-                      disabled={!nextEpisode}
-                      aria-label="Tập tiếp theo"
-                      title="Tập tiếp theo"
-                      className="rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center text-white w-11 h-11 sm:w-8 sm:h-8 disabled:opacity-30 disabled:active:bg-transparent"
-                      style={{ touchAction: 'manipulation' }}
-                    >
-                      <SkipForward className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" fill="currentColor" />
-                    </button>
-                    <span className="ml-1 text-[11px] sm:text-xs text-white/60 font-medium tabular-nums whitespace-nowrap">
-                      {episodeIndex >= 0 ? episodeIndex + 1 : '–'} / {currentServer.server_data.length} tập
-                    </span>
-                  </>
-                )}
               </div>
+              {/* Giữa: tập trước / số tập / tập tiếp (desktop căn tuyệt đối giữa hàng) */}
+              {currentServer.server_data.length > 1 && (
+                <div className="flex items-center gap-0.5 sm:gap-1 sm:absolute sm:left-1/2 sm:-translate-x-1/2">
+                  <button
+                    onClick={() => { if (prevEpisode) { onSelectEpisode(prevEpisode, currentServer); resetControlsTimer(); } }}
+                    disabled={!prevEpisode}
+                    aria-label="Tập trước"
+                    title="Tập trước"
+                    className="rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center text-white w-11 h-11 sm:w-8 sm:h-8 disabled:opacity-30 disabled:active:bg-transparent"
+                    style={{ touchAction: 'manipulation' }}
+                  >
+                    <SkipBack className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" fill="currentColor" />
+                  </button>
+                  <button
+                    onClick={() => { if (nextEpisode) { onSelectEpisode(nextEpisode, currentServer); resetControlsTimer(); } }}
+                    disabled={!nextEpisode}
+                    aria-label="Tập tiếp theo"
+                    title="Tập tiếp theo"
+                    className="rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center text-white w-11 h-11 sm:w-8 sm:h-8 disabled:opacity-30 disabled:active:bg-transparent"
+                    style={{ touchAction: 'manipulation' }}
+                  >
+                    <SkipForward className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" fill="currentColor" />
+                  </button>
+                  <span className="ml-1 text-[11px] sm:text-xs text-white/60 font-medium tabular-nums whitespace-nowrap">
+                    {episodeIndex >= 0 ? episodeIndex + 1 : '–'} / {currentServer.server_data.length} tập
+                  </span>
+                </div>
+              )}
               <div className="flex items-center gap-0.5 sm:gap-1">
                 {/* Episode list - bottom-sheet trên mobile, popup trên desktop */}
                 {currentServer.server_data.length > 1 && (
@@ -2141,19 +2538,21 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                     )}
                   </div>
                 )}
-                {/* Server */}
+                {/* Phụ đề và âm thanh (kiểu Netflix): chọn audio = đổi server Vietsub/Thuyết minh */}
                 <div className="relative">
-                  <button ref={serverBtnRef} onClick={(e) => { if (!showServerMenu) menuOpenerRef.current = e.currentTarget; setShowServerMenu(!showServerMenu); setShowSettings(false); setShowEpisodes(false); }} aria-label="Máy chủ" title="Máy chủ" className="player-menu-btn rounded-full sm:rounded-lg bg-transparent active:bg-white/20 hover:bg-white/10 border border-transparent hover:border-white/10 text-white flex items-center justify-center sm:justify-start gap-1.5 transition-colors w-11 h-11 sm:w-auto sm:h-8 sm:px-2.5" style={{ touchAction: 'manipulation' }}><Server className="w-5 h-5 sm:w-3 sm:h-3 shrink-0" /> <span className="hidden sm:inline text-xs truncate">Máy chủ</span></button>
+                  <button ref={serverBtnRef} onClick={(e) => { if (!showServerMenu) menuOpenerRef.current = e.currentTarget; setShowServerMenu(!showServerMenu); setShowSettings(false); setShowEpisodes(false); }} aria-label="Phụ đề và âm thanh" title="Phụ đề và âm thanh" className="player-menu-btn rounded-full sm:rounded-lg bg-transparent active:bg-white/20 hover:bg-white/10 border border-transparent hover:border-white/10 text-white flex items-center justify-center sm:justify-start gap-1.5 transition-colors w-11 h-11 sm:w-auto sm:h-8 sm:px-2.5" style={{ touchAction: 'manipulation' }}><Captions className="w-5 h-5 sm:w-3.5 sm:h-3.5 shrink-0" /> <span className="hidden sm:inline text-xs truncate">Phụ đề và âm thanh</span></button>
                   {showServerMenu && (
                     <>
                       <div className="sm:hidden fixed inset-0 z-40 bg-black/60" onClick={() => setShowServerMenu(false)} onTouchEnd={() => setShowServerMenu(false)} />
-                      <div className="player-menu-panel z-50 bg-[#1c1c1e] border border-white/10 shadow-2xl fixed inset-x-0 bottom-0 rounded-t-2xl p-4 pb-[max(20px,env(safe-area-inset-bottom,0px))] max-h-[60vh] overflow-auto sm:absolute sm:inset-x-auto sm:right-0 sm:bottom-10 sm:rounded-xl sm:p-2 sm:w-48 sm:max-h-60 sm:pb-2">
+                      <div className="player-menu-panel z-50 bg-[#1c1c1e] border border-white/10 shadow-2xl fixed inset-x-0 bottom-0 rounded-t-2xl p-4 pb-[max(20px,env(safe-area-inset-bottom,0px))] max-h-[60vh] overflow-auto sm:absolute sm:inset-x-auto sm:right-0 sm:bottom-10 sm:rounded-xl sm:p-3 sm:w-64 sm:max-h-72 sm:pb-3">
                         <div className="sm:hidden w-10 h-1 rounded-full bg-white/20 mx-auto mb-3" />
-                        <p className="text-[11px] font-bold text-white/50 uppercase mb-2 px-1">Máy chủ</p>
+                        <p className="text-[11px] font-bold text-white/50 uppercase mb-2 px-1">Âm thanh</p>
                         {allServers.map(s => (
                           <button key={s.server_name} onClick={() => { const ep = s.server_data.find(e => e.slug === currentEpisode.slug) || s.server_data[0]; if (ep) onSelectEpisode(ep, s, videoRef.current?.currentTime); setShowServerMenu(false); }} className={`w-full text-left px-3 py-3 sm:py-2 rounded-xl sm:rounded-lg text-sm sm:text-xs mb-1 active:scale-[0.98] transition ${s.server_name===currentServer.server_name ? 'bg-blue-500 text-white' : 'text-white/80 bg-white/5 sm:bg-transparent active:bg-white/15'}`}>{s.server_name}</button>
                         ))}
-                        {allServers.length===0 && <span className="text-xs text-white/40 px-3">Không có server khác</span>}
+                        {allServers.length===0 && <span className="text-xs text-white/40 px-3">Không có nguồn âm thanh khác</span>}
+                        <p className="text-[11px] font-bold text-white/50 uppercase mt-3 mb-2 px-1">Phụ đề</p>
+                        <div className="w-full text-left px-3 py-3 sm:py-2 rounded-xl sm:rounded-lg text-sm sm:text-xs bg-blue-500 text-white">Tiếng Việt <span className="opacity-70">(có sẵn trong phim)</span></div>
                       </div>
                     </>
                   )}
@@ -2168,19 +2567,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                         <div className="flex items-center justify-between mb-3 sm:mb-0">
                           <p className="sm:hidden text-sm font-bold text-white">Cài đặt phát lại</p>
                           <button onClick={() => setShowSettings(false)} className="sm:hidden w-8 h-8 rounded-full bg-white/10 flex items-center justify-center" aria-label="Đóng"><ChevronDown className="w-4 h-4 text-white" /></button>
-                        </div>
-                        {/* Mobile: volume + brightness nhanh */}
-                        <div className="sm:hidden mb-4 grid grid-cols-2 gap-2">
-                          <div className="bg-white/5 rounded-xl p-3">
-                            <p className="text-[11px] font-bold text-white/50 uppercase mb-2 flex items-center gap-1"><Volume2 className="w-3 h-3" /> Âm lượng</p>
-                            <input type="range" min={0} max={1} step={0.05} value={isMuted ? 0 : volume} onChange={handleVolume} className="w-full accent-blue-500 h-8" />
-                            <p className="text-xs text-white/70 tabular-nums mt-1">{Math.round((isMuted ? 0 : volume) * 100)}%</p>
-                          </div>
-                          <div className="bg-white/5 rounded-xl p-3">
-                            <p className="text-[11px] font-bold text-white/50 uppercase mb-2 flex items-center gap-1"><Sun className="w-3 h-3" /> Độ sáng</p>
-                            <input type="range" min={0.4} max={1} step={0.05} value={screenBrightness} onChange={(e) => setScreenBrightness(parseFloat(e.target.value))} className="w-full accent-blue-500 h-8" />
-                            <p className="text-xs text-white/70 tabular-nums mt-1">{Math.round(screenBrightness * 100)}%</p>
-                          </div>
                         </div>
                       <div className="mb-3">
                         <p className="text-[11px] font-bold text-white/50 uppercase mb-2">Tốc độ</p>
@@ -2210,13 +2596,8 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                     </>
                   )}
                 </div>
-                {/* PiP: chỉ hiện khi nền tảng hỗ trợ (web/PWA có browser PiP, APK có native PiP) */}
-                {pipSupported && (
-                  <button onClick={handlePip} aria-label="Picture in picture" className={`rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center w-11 h-11 sm:w-8 sm:h-8 ${isPip ? 'text-blue-400' : 'text-white'}`} style={{ touchAction: 'manipulation' }}><PictureInPicture2 className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" /></button>
-                )}
                 {/* Khóa màn hình: chỉ mobile (touch) mới cần, desktop ẩn */}
                 <button onClick={toggleLock} aria-label="Khóa màn hình" title="Khóa màn hình" className="sm:hidden rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center text-white w-11 h-11" style={{ touchAction: 'manipulation' }}><Lock className="w-5 h-5 shrink-0" /></button>
-                <button onClick={toggleFullscreen} aria-label="Toàn màn hình" className={`rounded-full active:bg-white/20 hover:bg-white/10 flex items-center justify-center w-11 h-11 sm:w-8 sm:h-8 ${isNativeAndroid() && nativeImmersive ? 'text-blue-400' : 'text-white'}`} style={{ touchAction: 'manipulation' }}>{(isFullscreen || (isNativeAndroid() && nativeImmersive)) ? <Minimize className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" /> : <Maximize className="w-5 h-5 sm:w-4 sm:h-4 shrink-0" />}</button>
               </div>
             </div>
           </div>

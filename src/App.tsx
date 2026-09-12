@@ -60,7 +60,7 @@ import { applyTvClass } from "./utils/tvDetect";
 import { useTvRemoteNav } from "./hooks/useTvRemote";
 import { useTvMode } from "./hooks/useTvMode";
 import { App as CapApp } from "@capacitor/app";
-import { appNavigate } from "./routerNav";
+import { appNavigate, appGoBack } from "./routerNav";
 import { RouteSync } from "./components/RouteSync";
 import { TvDebugPanel } from "./components/TvDebugPanel";
 import {
@@ -375,6 +375,18 @@ export default function App() {
   // URL để quay về khi đóng overlay (deep-link vào thẳng thì về tab, đi trong app thì về chỗ cũ)
   const detailReturnRef = useRef<string>("/");
   const playerReturnRef = useRef<string>("/");
+  // Entry hiện tại có phải deep-link/reload (không phải do app push) không.
+  // Đóng overlay đi trong app thì đi LÙI 1 entry (-1, đúng thứ tự home->detail->
+  // player); chỉ deep-link mới về URL dự phòng (kẻo -1 văng khỏi app).
+  const deepLinkEntryRef = useRef<boolean | null>(null);
+  if (deepLinkEntryRef.current === null) {
+    try {
+      const r0 = parseLocation(window.location.pathname, window.location.search);
+      deepLinkEntryRef.current = r0.kind === "detail" || r0.kind === "player";
+    } catch {
+      deepLinkEntryRef.current = false;
+    }
+  }
   // Chống resolve deep-link cũ đè resolve mới khi fetch chồng nhau
   const routeReqRef = useRef(0);
   // Ref trỏ tới các handler điều hướng (effect back-button khai báo trước handler nên gọi qua ref để tránh TDZ)
@@ -1427,16 +1439,38 @@ export default function App() {
       detailReturnRef.current =
         window.location.pathname + window.location.search;
     }
+    // Mở trong app = push entry mới -> nút Đóng đi lùi (-1) đúng thứ tự
+    deepLinkEntryRef.current = false;
     setSelectedMovieForDetail(movie);
     appNavigate(buildPhimUrl(movie.slug));
   };
 
   const closeDetailModal = () => {
+    if (!selectedMovieForDetail) return; // đã đóng rồi (tránh lùi 2 entry)
     const r = parseLocation(window.location.pathname, window.location.search);
     setSelectedMovieForDetail(null);
-    // Đang ở URL detail thì về chỗ cũ, không thì chỉ đóng state (tránh yank URL lạ)
-    if (r.kind === "detail") appNavigate(detailReturnRef.current || "/");
+    if (r.kind !== "detail") return; // không ở URL detail thì chỉ clear state (tránh yank URL lạ)
+    if (deepLinkEntryRef.current) {
+      // Deep-link/reload: không có entry trước của app -> về URL dự phòng
+      deepLinkEntryRef.current = false;
+      appNavigate(detailReturnRef.current || "/", { replace: true });
+      return;
+    }
+    // Đi trong app: lùi 1 entry để đúng thứ tự mở (player/detail trước đó tự hiện lại qua route)
+    appGoBack();
   };
+
+  // Shell mở player ngay kiểu Netflix: tập/server giả trong lúc chờ source nền.
+  // Route /watch/:slug (không tập) sẽ kích applyLocationRoute tự resolve tập thật.
+  const RESOLVING_EPISODE_SLUG = "__resolving__";
+  const resolvingEpisode: MovieEpisode = {
+    name: "",
+    slug: "__resolving__",
+    filename: "",
+    link_embed: "",
+    link_m3u8: "",
+  };
+  const resolvingServer: EpisodeServer = { server_name: "", server_data: [resolvingEpisode] };
 
   // Lõi mở player (set state + ghi lịch sử), KHÔNG đụng URL — wrapper mới điều hướng
   const applyPlayerOpen = (
@@ -1445,6 +1479,7 @@ export default function App() {
     server: EpisodeServer,
     servers: EpisodeServer[],
     resumeTime: number,
+    skipHistory = false,
   ) => {
     videoTimeRef.current = resumeTime;
     videoDurationRef.current = 0;
@@ -1456,7 +1491,8 @@ export default function App() {
     setInitialResumeTime(resumeTime);
 
     // Ghi nhận ngay khi bắt đầu xem để mục "Xem tiếp" / "Lịch sử" xuất hiện lập tức.
-    if (currentAccount && activeProfile) {
+    // Shell chờ source (skipHistory) thì bỏ qua, kẻo rác bản ghi 0 tiến độ.
+    if (currentAccount && activeProfile && !skipHistory) {
       firestoreStorage
         .saveWatchProgress(currentAccount.id, activeProfile.id, {
           id: `${movie.slug}_${episode.slug}`,
@@ -1483,14 +1519,23 @@ export default function App() {
     server: EpisodeServer,
     servers: EpisodeServer[],
     resumeTime: number,
+    resolving = false,
   ) => {
-    applyPlayerOpen(movie, episode, server, servers, resumeTime);
+    applyPlayerOpen(movie, episode, server, servers, resumeTime, resolving);
     // Giữ detail ở dưới player để player zoom trên nền detail (đúng rule iOS: mở zoom vào, đóng thu nhỏ)
     // Đóng player sẽ quay về detail (nếu đang mở) hoặc tab.
     playerReturnRef.current = selectedMovieForDetail
       ? buildPhimUrl(selectedMovieForDetail.slug)
       : buildTabUrl(activeTab);
-    appNavigate(buildXemUrl(movie.slug, episode.slug, server.server_name));
+    // Mở trong app = push entry mới -> nút Đóng đi lùi (-1) đúng thứ tự
+    deepLinkEntryRef.current = false;
+    // Shell chờ source: điều hướng /watch/:slug (không tập) để route tự resolve
+    // tập thật nền; tập thật có thì đi thẳng URL đầy đủ như cũ.
+    appNavigate(
+      resolving
+        ? buildXemUrl(movie.slug)
+        : buildXemUrl(movie.slug, episode.slug, server.server_name),
+    );
   };
 
   // Snapshot tiến độ lần cuối khi thoát player (bản cũ nằm ở popstate)
@@ -1531,12 +1576,22 @@ export default function App() {
   };
 
   const closePlayer = () => {
+    if (!playingMovieRef.current) return; // đã đóng rồi (tránh lùi 2 entry)
     const r = parseLocation(window.location.pathname, window.location.search);
     saveFinalProgress();
     setPlayingMovie(null);
     playingMovieRef.current = null;
-    // Đang ở URL player thì về chỗ cũ, không thì chỉ clear state
-    if (r.kind === "player") appNavigate(playerReturnRef.current || "/");
+    // Hủy các lần resolve route đang bay (tránh fetch về sau mở lại player đã đóng)
+    routeReqRef.current++;
+    if (r.kind !== "player") return; // không ở URL player thì chỉ clear state
+    if (deepLinkEntryRef.current) {
+      // Deep-link/reload: không có entry trước của app -> về URL dự phòng
+      deepLinkEntryRef.current = false;
+      appNavigate(playerReturnRef.current || "/", { replace: true });
+      return;
+    }
+    // Đi trong app: lùi 1 entry để đúng thứ tự mở (detail trước đó tự hiện lại qua route)
+    appGoBack();
   };
 
   // Đăng ký vào ref cho effect back-button (khai báo trước handler)
@@ -1546,52 +1601,48 @@ export default function App() {
     goHome: () => handleTabChange("home"),
   };
 
-  // Start Playing a Movie directly
+  // Start Playing a Movie directly.
+  // Mở player NGAY kiểu Netflix (shell + poster), source resolve nền qua route
+  // /watch/:slug — không đợi getMovieDetail xong mới mở.
   const handlePlayMovie = async (movie: Movie) => {
-    try {
-      showToast(`Đang kết nối phim: ${movie.name}...`);
-      let resumeSeconds = 0;
-      if (currentAccount && activeProfile) {
-        const matchHist = watchHistory.find((h) => h.movieSlug === movie.slug);
-        if (matchHist && matchHist.currentTime > 10) {
-          resumeSeconds = matchHist.currentTime;
-        }
+    let resumeSeconds = 0;
+    if (currentAccount && activeProfile) {
+      const matchHist = watchHistory.find((h) => h.movieSlug === movie.slug);
+      if (matchHist && matchHist.currentTime > 10) {
+        resumeSeconds = matchHist.currentTime;
       }
-
-      let movieData = movie;
-      let servers: EpisodeServer[] = movie.episodes || [];
-
-      if (!servers || servers.length === 0) {
-        const detail = await movieApi.getMovieDetail(movie.slug);
-        movieData = detail.movie || movie;
-        servers = detail.episodes || [];
-      }
-
-      if (
-        servers.length > 0 &&
-        servers[0].server_data &&
-        servers[0].server_data.length > 0
-      ) {
-        const defaultServer = servers[0];
-        const defaultEpisode = defaultServer.server_data[0];
-
-        openPlayerWithHistory(
-          movieData,
-          defaultEpisode,
-          defaultServer,
-          servers,
-          resumeSeconds,
-        );
-      } else {
-        openDetailModal(movieData || movie);
-      }
-    } catch (err: any) {
-      void 0;
-      showToast(
-        `Không thể tải phim: ${err?.message || "Vui lòng thử lại sau"}`,
-      );
-      openDetailModal(movie);
     }
+
+    const servers: EpisodeServer[] = movie.episodes || [];
+
+    // Đã có sẵn tập (từ detail/modal): mở thẳng như cũ, tức thì
+    if (
+      servers.length > 0 &&
+      servers[0].server_data &&
+      servers[0].server_data.length > 0
+    ) {
+      const defaultServer = servers[0];
+      const defaultEpisode = defaultServer.server_data[0];
+
+      openPlayerWithHistory(
+        movie,
+        defaultEpisode,
+        defaultServer,
+        servers,
+        resumeSeconds,
+      );
+      return;
+    }
+
+    // Chưa có source: mở shell ngay, route /watch/:slug tự fetch + resolve nền
+    openPlayerWithHistory(
+      movie,
+      resolvingEpisode,
+      resolvingServer,
+      [],
+      resumeSeconds,
+      true,
+    );
   };
 
   // Play a specific episode
@@ -2063,6 +2114,7 @@ export default function App() {
               onTimeUpdate={handlePlayerTimeUpdate}
               currentAccount={currentAccount}
               activeProfile={activeProfile}
+              isResolvingSource={playingEpisode.slug === RESOLVING_EPISODE_SLUG}
             />
           )}
         </AnimatePresence>

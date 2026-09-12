@@ -30,6 +30,7 @@ import { CreateRoomModal, JoinRoomModal } from './watch-together';
 import { offlineMovieService } from '../services/offlineMovieService';
 import { followMovieService } from '../services/followMovieService';
 import { Capacitor } from '@capacitor/core';
+import { markProgrammaticFocus } from '../utils/tvRemote';
 
 interface MovieDetailModalProps {
   movie: Movie | null;
@@ -694,23 +695,48 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
 
   if (!movie || !currentData) return null;
 
-  // TV remote: mở trang chi tiết là focus ngay nút Xem để D-pad đi được liền
+  // TV remote: mở trang chi tiết là focus ngay nút "Xem Phim Ngay" ĐANG HIỆN
+  // (có 3 nút desktop/mobile, chỉ 1 hiện tùy màn hình) để D-pad đi được liền.
+  // Poll ngắn vì dữ liệu chi tiết về sau mới render xong nút.
   useEffect(() => {
     let isTv = false;
     try {
       isTv = document.documentElement.classList.contains('tv-mode');
     } catch {}
     if (!isTv) return;
-    const t = window.setTimeout(() => {
+    const isVisible = (el: HTMLElement): boolean => {
       try {
-        const btn = document.querySelector<HTMLElement>(
-          '#hero-primary-play-btn, #detail-floating-close-btn',
+        const r = el.getBoundingClientRect();
+        if (r.width <= 4 || r.height <= 4) return false;
+        const st = window.getComputedStyle(el);
+        return st.display !== 'none' && st.visibility !== 'hidden';
+      } catch {
+        return false;
+      }
+    };
+    let tries = 0;
+    const timer = window.setInterval(() => {
+      try {
+        tries += 1;
+        const btns = Array.from(
+          document.querySelectorAll<HTMLElement>('#movie-detail-fullpage [data-tv-detail-play]'),
         );
-        btn?.focus({ preventScroll: true } as FocusOptions);
+        const target = btns.find(isVisible);
+        if (target) {
+          try { markProgrammaticFocus(); } catch {}
+          try {
+            target.focus({ preventScroll: true } as FocusOptions);
+          } catch {
+            target.focus();
+          }
+          window.clearInterval(timer);
+        } else if (tries >= 12) {
+          window.clearInterval(timer);
+        }
       } catch {}
-    }, 350);
-    return () => window.clearTimeout(t);
-  }, [movie?.slug]);
+    }, 250);
+    return () => window.clearInterval(timer);
+  }, [movie?.slug, isLoading]);
 
   return (
     <motion.div
@@ -961,6 +987,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                   <div className="hidden sm:flex flex-wrap items-center gap-3 pt-1 sm:pt-2">
                     <button
                       id="hero-primary-play-btn"
+                      data-tv-detail-play
                       onClick={handleStartPlay}
                       className="flex items-center gap-2 bg-gradient-to-r from-blue-600 via-sky-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white px-6 sm:px-8 py-2.5 sm:py-3.5 rounded-2xl font-bold text-sm sm:text-base shadow-2xl shadow-blue-600/40 transition-transform hover:scale-105 active:scale-95 cursor-pointer"
                     >
@@ -1110,6 +1137,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
               <div className="sm:hidden mt-4 space-y-3 w-full">
                 {/* Primary "Xem Phim Ngay" Button */}
                 <button
+                  data-tv-detail-play
                   onClick={handleStartPlay}
                   className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 via-sky-600 to-indigo-600 active:from-blue-500 active:to-indigo-500 text-white py-3 rounded-xl font-bold text-sm shadow-xl shadow-blue-600/35 cursor-pointer active:scale-[0.98] transition-all"
                 >
@@ -1316,6 +1344,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
             <div className="space-y-3 pt-1">
               {/* Primary Full Width button */}
               <button
+                data-tv-detail-play
                 onClick={handleStartPlay}
                 className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-blue-600 via-sky-600 to-indigo-600 active:from-blue-500 active:to-indigo-500 text-white py-3 rounded-xl font-bold text-sm shadow-xl shadow-blue-600/30 active:scale-[0.98] transition-all cursor-pointer"
               >

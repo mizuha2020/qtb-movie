@@ -30,9 +30,10 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [tmdbBackdropMap, setTmdbBackdropMap] = useState<Record<string, string>>({});
   const [tmdbLogoMap, setTmdbLogoMap] = useState<Record<string, string>>({});
-  // TV box RAM yếu: dùng backdrop w1280 thay original (vài MB) cho đỡ lag/OOM
+  // Backdrop hero: luôn w1280 (đủ cho màn hình lớn, nhẹ hơn /original vài MB).
+  // Trước đây chỉ TV dùng w1280, mobile/desktop tải original 4K — phí băng thông.
   const isTvHero = useTvMode();
-  const heroImgSize = isTvHero ? '/w1280' : '/original';
+  const heroImgSize = '/w1280';
 
   const heroMovies = useMemo(() => (movies || []).slice(0, HERO_LIMIT), [movies]);
 

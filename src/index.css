@@ -231,8 +231,6 @@ video::-webkit-media-controls {
 .tv-mode .group\/scrub:focus-visible .scrub-progress::after {
   box-shadow: 0 0 0 5px rgba(56, 189, 248, 0.45), 0 0 14px rgba(56, 189, 248, 0.5) !important;
 }
-/* TV: ẩn hẳn nút tua ±10s ở hàng bottom (tua bằng timeline + D-pad) */
-.tv-mode .tv-player-bottom .tv-seek-btn { display: none !important; }
 @media (min-width: 1920px) {
   *:focus-visible {
     outline: 4px solid #38bdf8 !important;
