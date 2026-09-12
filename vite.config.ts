@@ -19,5 +19,25 @@ export default defineConfig(() => {
     server: {
       hmr: false,
     },
+    build: {
+      // Chia vendor chunk: browser cache tốt hơn khi deploy bản mới, và
+      // các thư viện chỉ dùng bởi component lazy (shaka/hls/swiper) chỉ
+      // tải theo chunk của component đó — đỡ parse lúc khởi động trên TV.
+      chunkSizeWarningLimit: 900,
+      rollupOptions: {
+        output: {
+          manualChunks(id: string) {
+            if (!id.includes('node_modules')) return undefined;
+            if (id.includes('@firebase') || id.includes('node_modules/firebase')) return 'vendor-firebase';
+            if (id.includes('hls.js') || id.includes('hls.js')) return 'vendor-hls';
+            if (id.includes('shaka-player')) return 'vendor-shaka';
+            if (id.includes('swiper')) return 'vendor-swiper';
+            if (id.includes('framer-motion') || id.includes('/motion')) return 'vendor-motion';
+            if (id.includes('lucide-react')) return 'vendor-lucide';
+            return undefined;
+          },
+        },
+      },
+    },
   };
 });

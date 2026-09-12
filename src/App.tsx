@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useRef, useMemo } from "react";
+import React, { Suspense, useEffect, useState, useCallback, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Account,
@@ -26,14 +26,27 @@ import { Theater3DCarousel } from "./components/Theater3DCarousel";
 import { CinematicCarousel } from "./components/CinematicCarousel";
 import { MovieRow } from "./components/MovieRow";
 import { ForYouRow } from "./components/ForYouRow";
-import { MovieDetailModal } from "./components/MovieDetailModal";
-import { GauPlayer } from "./components/GauPlayer";
+// Code-splitting: các component nặng chỉ tải khi cần (mở modal / mở player /
+// chuyển app LiveTV / bật debug) — giảm nhiều JS phải parse lúc khởi động app
+// trên TV box yếu. Suspense bọc tại chỗ render để không che toàn app.
+const MovieDetailModal = React.lazy(() =>
+  import("./components/MovieDetailModal").then((m) => ({
+    default: m.MovieDetailModal,
+  }))
+);
+const GauPlayer = React.lazy(() =>
+  import("./components/GauPlayer").then((m) => ({ default: m.GauPlayer }))
+);
 import { ProfileSelector } from "./components/ProfileSelector";
 import { FilterSection } from "./components/FilterSection";
 import { MyListView } from "./components/MyListView";
 import { HistoryView } from "./components/HistoryView";
 import { OfflineSavedView } from "./components/OfflineSavedView";
-import { LiveTvAppWrapper } from "./apps/LiveTvAppWrapper";
+const LiveTvAppWrapper = React.lazy(() =>
+  import("./apps/LiveTvAppWrapper").then((m) => ({
+    default: m.LiveTvAppWrapper,
+  }))
+);
 import { AppSwitcherLoading } from "./components/AppSwitcherLoading";
 import { ProfileSwitchLoader } from "./components/ProfileSwitchLoader";
 import { MobileBottomNav } from "./components/MobileBottomNav";
@@ -56,7 +69,11 @@ import { useTvMode } from "./hooks/useTvMode";
 import { App as CapApp } from "@capacitor/app";
 import { appNavigate, appGoBack } from "./routerNav";
 import { RouteSync } from "./components/RouteSync";
-import { TvDebugPanel } from "./components/TvDebugPanel";
+const TvDebugPanel = React.lazy(() =>
+  import("./components/TvDebugPanel").then((m) => ({
+    default: m.TvDebugPanel,
+  }))
+);
 import {
   buildTabUrl,
   buildPhimUrl,
@@ -1772,15 +1789,17 @@ export default function App() {
 
   if (activeApp === "livetv") {
     appContent = (
-      <LiveTvAppWrapper
-        currentAccount={currentAccount}
-        activeProfile={activeProfile}
-        profiles={profiles}
-        onSelectProfile={handleQuickSwitchProfile}
-        onSwitchApp={handleSwitchApp}
-        onSwitchProfileScreen={() => setShowProfileSelector(true)}
-        onLogout={handleLogoutRequest}
-      />
+      <Suspense fallback={null}>
+        <LiveTvAppWrapper
+          currentAccount={currentAccount}
+          activeProfile={activeProfile}
+          profiles={profiles}
+          onSelectProfile={handleQuickSwitchProfile}
+          onSwitchApp={handleSwitchApp}
+          onSwitchProfileScreen={() => setShowProfileSelector(true)}
+          onLogout={handleLogoutRequest}
+        />
+      </Suspense>
     );
   } else {
     appContent = (
@@ -1813,21 +1832,25 @@ export default function App() {
         {/* 2. Fullscreen HLS Video Player - GauPlayer minimal style */}
         <AnimatePresence mode="wait">
           {playingMovie && playingEpisode && playingServer && (
-            <GauPlayer
+            <Suspense
               key={`player-${playingMovie.slug}-${playingEpisode.slug}`}
-              movie={playingMovie}
-              currentEpisode={playingEpisode}
-              currentServer={playingServer}
-              allServers={allServers}
-              initialTime={initialResumeTime}
-              onBack={closePlayer}
-              onSelectEpisode={handleSelectEpisode}
-              onSaveProgress={handleSaveProgress}
-              onTimeUpdate={handlePlayerTimeUpdate}
-              currentAccount={currentAccount}
-              activeProfile={activeProfile}
-              isResolvingSource={playingEpisode.slug === RESOLVING_EPISODE_SLUG}
-            />
+              fallback={null}
+            >
+              <GauPlayer
+                movie={playingMovie}
+                currentEpisode={playingEpisode}
+                currentServer={playingServer}
+                allServers={allServers}
+                initialTime={initialResumeTime}
+                onBack={closePlayer}
+                onSelectEpisode={handleSelectEpisode}
+                onSaveProgress={handleSaveProgress}
+                onTimeUpdate={handlePlayerTimeUpdate}
+                currentAccount={currentAccount}
+                activeProfile={activeProfile}
+                isResolvingSource={playingEpisode.slug === RESOLVING_EPISODE_SLUG}
+              />
+            </Suspense>
           )}
         </AnimatePresence>
 
@@ -2469,22 +2492,26 @@ export default function App() {
         {/* 5. Movie Detail Modal */}
         <AnimatePresence mode="wait">
           {selectedMovieForDetail && (
-            <MovieDetailModal
+            <Suspense
               key={`detail-${selectedMovieForDetail.slug}`}
-              movie={selectedMovieForDetail}
-              onClose={closeDetailModal}
-              onPlayMovie={handlePlayMovie}
-              onPlayEpisode={handlePlayEpisode}
-              onToggleMyList={handleToggleMyList}
-              isInMyList={isInMyList}
-              onSelectRelatedMovie={(m) => openDetailModal(m)}
-              onSearchSubmit={handleSearchSubmit}
-              onSelectGenre={handleSelectGenre}
-              onSelectCountry={handleSelectCountry}
-              currentAccount={currentAccount}
-              activeProfile={activeProfile}
-              onShowToast={showToast}
-            />
+              fallback={null}
+            >
+              <MovieDetailModal
+                movie={selectedMovieForDetail}
+                onClose={closeDetailModal}
+                onPlayMovie={handlePlayMovie}
+                onPlayEpisode={handlePlayEpisode}
+                onToggleMyList={handleToggleMyList}
+                isInMyList={isInMyList}
+                onSelectRelatedMovie={(m) => openDetailModal(m)}
+                onSearchSubmit={handleSearchSubmit}
+                onSelectGenre={handleSelectGenre}
+                onSelectCountry={handleSelectCountry}
+                currentAccount={currentAccount}
+                activeProfile={activeProfile}
+                onShowToast={showToast}
+              />
+            </Suspense>
           )}
         </AnimatePresence>
 
@@ -2734,7 +2761,9 @@ export default function App() {
         type="warning"
       />
       <ToastContainer toasts={toasts} onRemove={() => {}} />
-      <TvDebugPanel />
+      <Suspense fallback={null}>
+        <TvDebugPanel />
+      </Suspense>
     </>
   );
 }
