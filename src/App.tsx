@@ -14,6 +14,7 @@ import {
 import { authService } from "./services/authService";
 import { firestoreStorage } from "./services/firestoreStorage";
 import { movieApi, getImageUrl } from "./services/movieApi";
+import { systemApiService } from "./services/systemApiService";
 import { presenceService } from "./services/presenceService";
 import { appConfigService } from "./services/appConfigService";
 import { verifyBackendUrl } from "./services/apiConfig";
@@ -115,17 +116,11 @@ function isHomeAtTop(): boolean {
 }
 
 /** Về đầu trang (dùng cho Back khi chưa ở top của trang chủ).
- *  TV: instant + reset focus lên neo trên cùng (deterministic, không smooth).
- *  Giữ smooth cho non-TV để không đổi UX mobile/desktop. */
+ *  Instant + reset focus lên neo trên cùng (deterministic, không smooth). */
 function scrollToHomeTop(): void {
   try {
-    const isTv = document.documentElement.classList.contains("tv-mode");
-    if (isTv) {
-      window.scrollTo(0, 0);
-      resetHomeFocusToTop();
-    } else {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
+    window.scrollTo(0, 0);
+    resetHomeFocusToTop();
   } catch {
     try {
       window.scrollTo(0, 0);
@@ -135,12 +130,10 @@ function scrollToHomeTop(): void {
 
 /**
  * Reset focus lên đầu trang home sau khi Back-về-top.
- * Không làm gì trên non-TV. Thứ tự ưu tiên: hero play -> card đầu hàng 1 ->
- * logo navbar -> phần tử focusable đầu tiên.
+ * Thứ tự ưu tiên: hero play -> card đầu hàng 1 -> logo navbar.
  */
 function resetHomeFocusToTop(): void {
   try {
-    if (!document.documentElement.classList.contains("tv-mode")) return;
     const pick = (): HTMLElement | null => {
       const sels = [
         "#hero-play-btn",
@@ -806,6 +799,11 @@ export default function App() {
     });
     // Native app: kiểm tra backend còn sống, chết thì tự đổi sang cloud (tránh APK bake URL cũ)
     verifyBackendUrl().catch(() => {});
+    // Realtime sync endpoint admin (toggle nguồn phim...) sang mọi thiết bị.
+    // Trước đây TV chỉ đọc localStorage của chính nó nên toggle không tới nơi.
+    try {
+      systemApiService.subscribeRealtime();
+    } catch {}
   }, []);
 
   // Load profiles whenever currentAccount changes
@@ -2805,6 +2803,7 @@ export default function App() {
                     <FilterSection
                       key="tab-series"
                       fixedType="series"
+                      plain
                       onOpenDetail={(m) => openDetailModal(m)}
                       onSelectMovie={(m) => openDetailModal(m)}
                       onPlay={handlePlayMovie}
@@ -2821,6 +2820,7 @@ export default function App() {
                     <FilterSection
                       key="tab-single"
                       fixedType="single"
+                      plain
                       onOpenDetail={(m) => openDetailModal(m)}
                       onSelectMovie={(m) => openDetailModal(m)}
                       onPlay={handlePlayMovie}
@@ -2837,6 +2837,7 @@ export default function App() {
                     <FilterSection
                       key="tab-anime"
                       fixedType="anime"
+                      plain
                       onOpenDetail={(m) => openDetailModal(m)}
                       onSelectMovie={(m) => openDetailModal(m)}
                       onPlay={handlePlayMovie}
@@ -2853,6 +2854,7 @@ export default function App() {
                     <FilterSection
                       key="tab-tv-shows"
                       fixedType="tv-shows"
+                      plain
                       onOpenDetail={(m) => openDetailModal(m)}
                       onSelectMovie={(m) => openDetailModal(m)}
                       onPlay={handlePlayMovie}

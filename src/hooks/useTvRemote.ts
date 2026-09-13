@@ -1,9 +1,12 @@
 import { useEffect } from 'react';
 import { applyTvClass } from '../utils/tvDetect';
 import {
+  armTvInputReadonly,
   ensureTvFocus,
+  exitTvEditMode,
   handleTvKey,
   isTvModeActive,
+  isTvTextInput,
   lastProgrammaticFocus,
 } from '../utils/tvRemote';
 
@@ -121,6 +124,70 @@ export function useTvRemoteNav() {
     return () => {
       window.removeEventListener('focusin', onFocusIn);
       if (timer) window.clearTimeout(timer);
+    };
+  }, []);
+
+  // TV IME gate: ô chữ mặc định readonly (lướt D-pad không bung phím),
+  // bấm OK mới mở khóa (xử lý trong handleTvKey). Rời ô thì khóa lại.
+  useEffect(() => {
+    const armAll = (root?: ParentNode | null) => {
+      try {
+        if (!isTvModeActive() || !root) return;
+        const scope: ParentNode = root;
+        const els = scope.querySelectorAll?.('input,textarea');
+        els?.forEach?.((el) => armTvInputReadonly(el as HTMLElement));
+      } catch {}
+    };
+    try {
+      armAll(document);
+    } catch {}
+    const onFocusIn = (e: FocusEvent) => {
+      try {
+        if (!isTvModeActive()) return;
+        const t = e.target as HTMLElement | null;
+        // Lưới cuối: ô nào lọt lưới (render sau observer...) mà bị focus
+        // khi chưa editing -> khóa ngay.
+        if (t && isTvTextInput(t) && !t.hasAttribute('data-tv-editing')) {
+          armTvInputReadonly(t);
+        }
+      } catch {}
+    };
+    const onFocusOut = (e: FocusEvent) => {
+      try {
+        const t = e.target as HTMLElement | null;
+        if (t && t.hasAttribute?.('data-tv-editing')) exitTvEditMode(t);
+      } catch {}
+    };
+    let mo: MutationObserver | null = null;
+    try {
+      mo = new MutationObserver((muts) => {
+        try {
+          if (!isTvModeActive()) return;
+          for (const m of muts) {
+            m.addedNodes?.forEach?.((n) => {
+              try {
+                if (!(n instanceof HTMLElement)) return;
+                if (isTvTextInput(n)) armTvInputReadonly(n);
+                n.querySelectorAll?.('input,textarea')?.forEach?.((el) =>
+                  armTvInputReadonly(el as HTMLElement),
+                );
+              } catch {}
+            });
+          }
+        } catch {}
+      });
+      if (document.body) {
+        mo.observe(document.body, { childList: true, subtree: true });
+      }
+    } catch {}
+    window.addEventListener('focusin', onFocusIn);
+    window.addEventListener('focusout', onFocusOut);
+    return () => {
+      window.removeEventListener('focusin', onFocusIn);
+      window.removeEventListener('focusout', onFocusOut);
+      try {
+        mo?.disconnect();
+      } catch {}
     };
   }, []);
 

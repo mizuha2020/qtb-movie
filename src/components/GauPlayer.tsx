@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo, memo } from 'react';
 import Hls from 'hls.js';
-import { Play, Pause, Settings, Captions, X, RotateCcw, RotateCw, SkipForward, SkipBack, List, ChevronDown, FastForward, Lock } from 'lucide-react';
+import { Play, Pause, Settings, Captions, RotateCcw, RotateCw, SkipForward, SkipBack, List, ChevronDown, FastForward, Lock } from 'lucide-react';
 import { EpisodeServer, Movie, MovieEpisode, Account, UserProfile } from '../types';
 import { getMirrorUrls } from '../utils/mirrorUrls';
 import { loadCleanedM3u8Url, revokeBlobUrl } from '../utils/m3u8Cleaner';
@@ -2076,16 +2076,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
               referrerPolicy="no-referrer"
               title={movie.name}
             />
-            {!isTv && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onBack(); }}
-              aria-label="Thoát"
-              className="absolute top-[calc(env(safe-area-inset-top,0px)+12px)] left-3 z-50 rounded-full bg-white/10 active:bg-white/30 flex items-center justify-center border-0 w-11 h-11"
-              style={{ touchAction: 'manipulation' }}
-            >
-              <X className="w-5 h-5 text-white shrink-0" />
-            </button>
-            )}
             {currentEpisode.link_m3u8 && (
               <button
                 onClick={(e) => { e.stopPropagation(); setUseEmbed(false); setRetryKey(k => k + 1); }}
@@ -2226,16 +2216,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
               />
             )}
             <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-black/60" />
-            {!isTv && (
-            <button
-              onClick={(e) => { e.stopPropagation(); onBack(); }}
-              aria-label="Thoát"
-              className="absolute top-[calc(env(safe-area-inset-top,0px)+12px)] right-3 z-10 rounded-full bg-white/10 active:bg-white/30 flex items-center justify-center border-0 w-11 h-11 sm:w-8 sm:h-8"
-              style={{ touchAction: 'manipulation' }}
-            >
-              <X className="w-5 h-5 sm:w-4 sm:h-4 text-white shrink-0" />
-            </button>
-            )}
             <div className="relative z-10 flex flex-col items-center gap-3 px-6 text-center">
               <div className="w-12 h-12 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
               <p className="text-white text-base font-semibold truncate max-w-[80vw]">{movie.name}</p>
@@ -2346,13 +2326,6 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
               <span className="block text-white text-[15px] sm:text-base font-semibold truncate">{movie.name}</span>
               <span className="block text-white/70 text-xs sm:text-[13px] font-medium truncate mt-0.5">{currentEpisode.name}</span>
             </h2>
-            <div className="flex items-center gap-2 shrink-0">
-              {!isTv && (
-              <button onClick={(e) => { e.stopPropagation(); onBack(); }} aria-label="Thoát" className="shrink-0 rounded-full bg-white/10 active:bg-white/30 hover:bg-white/20 flex items-center justify-center border-0 w-11 h-11 sm:w-8 sm:h-8" style={{ touchAction: 'manipulation' }}>
-                <X className="w-5 h-5 sm:w-4 sm:h-4 text-white shrink-0" />
-              </button>
-              )}
-            </div>
           </div>
           {/* Mobile: time + server nhanh */}
           <div className="sm:hidden mt-1 flex items-center gap-2 text-[11px] text-white/60 tabular-nums">

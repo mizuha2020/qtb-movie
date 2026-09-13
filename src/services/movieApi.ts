@@ -1021,6 +1021,51 @@ class ClientLRUCache<K, V> {
 const cache = new ClientLRUCache<string, any>(300);
 const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
+/** Xóa cache list/detail khi tập enabled đổi (admin toggle nguồn). */
+export function invalidateMovieCache(): void {
+  try {
+    cache.clear();
+  } catch {}
+}
+
+/**
+ * Lưới cuối: loại item thuộc nguồn đã disable khỏi mọi danh sách.
+ * Chặn cả 2 đường lọt: cache cũ (trước lúc disable) và server/proxy vẫn trả.
+ */
+function filterDisabledSources(items: Movie[]): Movie[] {
+  try {
+    const active = systemApiService.getActiveEndpointsForCategory('movie');
+    if (!active || active.length === 0) return items;
+    const enabledSet = new Set(active.map((e) => e.id));
+    return items.filter((m) => {
+      const src = (m as any).source as string | undefined;
+      if (!src) return true;
+      return enabledSet.has(src);
+    });
+  } catch {
+    return items;
+  }
+}
+
+function gatedList<T extends { items?: Movie[] }>(p: Promise<T>): Promise<T> {
+  return p.then((res) => {
+    try {
+      if (res && Array.isArray(res.items)) {
+        return { ...res, items: filterDisabledSources(res.items || []) };
+      }
+    } catch {}
+    return res;
+  });
+}
+
+try {
+  systemApiService.onEnabledChange(() => {
+    try {
+      cache.clear();
+    } catch {}
+  });
+} catch {}
+
 const inflight = new Map<string, Promise<any>>();
 async function cachedFetch<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
   const cached = cache.get(key, CACHE_TTL);
@@ -1269,7 +1314,7 @@ export const movieApi = {
     const source = sourceOverride || getActiveApiSource();
     const cacheKey = `new-updated:${source}:${page}:${limit}`;
 
-    return cachedFetch(cacheKey, async () => {
+    return gatedList(cachedFetch(cacheKey, async () => {
       if (source === 'kkphim') {
         const raw = await fetchKKPhim<any>('danh-sach/phim-moi-cap-nhat', { page });
         return normalizeMovieList(raw, 'kkphim');
@@ -1314,7 +1359,7 @@ export const movieApi = {
           totalPages: 50,
         },
       };
-    });
+    }));
   },
 
   // 2. Phim bộ
@@ -1322,7 +1367,7 @@ export const movieApi = {
     const source = sourceOverride || getActiveApiSource();
     const cacheKey = `series:${source}:${page}:${limit}`;
 
-    return cachedFetch(cacheKey, async () => {
+    return gatedList(cachedFetch(cacheKey, async () => {
       if (source === 'kkphim') {
         const raw = await fetchKKPhim<any>('v1/api/danh-sach/phim-bo', { page, limit });
         return normalizeMovieList(raw, 'kkphim');
@@ -1353,7 +1398,7 @@ export const movieApi = {
         status: true,
         items: Array.from(map.values()),
       };
-    });
+    }));
   },
 
   // 3. Phim lẻ
@@ -1361,7 +1406,7 @@ export const movieApi = {
     const source = sourceOverride || getActiveApiSource();
     const cacheKey = `single:${source}:${page}:${limit}`;
 
-    return cachedFetch(cacheKey, async () => {
+    return gatedList(cachedFetch(cacheKey, async () => {
       if (source === 'kkphim') {
         const raw = await fetchKKPhim<any>('v1/api/danh-sach/phim-le', { page, limit });
         return normalizeMovieList(raw, 'kkphim');
@@ -1387,7 +1432,7 @@ export const movieApi = {
         if (!map.has(m.slug)) map.set(m.slug, m);
       }
       return { status: true, items: Array.from(map.values()) };
-    });
+    }));
   },
 
   // 4. Hoạt hình / Anime
@@ -1395,7 +1440,7 @@ export const movieApi = {
     const source = sourceOverride || getActiveApiSource();
     const cacheKey = `anime:${source}:${page}:${limit}`;
 
-    return cachedFetch(cacheKey, async () => {
+    return gatedList(cachedFetch(cacheKey, async () => {
       if (source === 'kkphim') {
         const raw = await fetchKKPhim<any>('v1/api/danh-sach/hoat-hinh', { page, limit });
         return normalizeMovieList(raw, 'kkphim');
@@ -1427,8 +1472,8 @@ export const movieApi = {
       }
       
       const merged = Array.from(map.values());
-      return { 
-        status: true, 
+      return {
+        status: true,
         items: merged,
         pagination: {
           totalItems: merged.length * 20,
@@ -1437,7 +1482,7 @@ export const movieApi = {
           totalPages: 50,
         }
       };
-    });
+    }));
   },
 
   // 5. TV Shows
@@ -1445,7 +1490,7 @@ export const movieApi = {
     const source = sourceOverride || getActiveApiSource();
     const cacheKey = `tvshows:${source}:${page}:${limit}`;
 
-    return cachedFetch(cacheKey, async () => {
+    return gatedList(cachedFetch(cacheKey, async () => {
       if (source === 'kkphim') {
         const raw = await fetchKKPhim<any>('v1/api/danh-sach/tv-shows', { page, limit });
         return normalizeMovieList(raw, 'kkphim');
@@ -1477,8 +1522,8 @@ export const movieApi = {
       }
       
       const merged = Array.from(map.values());
-      return { 
-        status: true, 
+      return {
+        status: true,
         items: merged,
         pagination: {
           totalItems: merged.length * 20,
@@ -1487,7 +1532,7 @@ export const movieApi = {
           totalPages: 50,
         }
       };
-    });
+    }));
   },
 
   // 6. Lọc theo Thể loại
@@ -1505,7 +1550,7 @@ export const movieApi = {
       'hanh-dong': ['hanh-dong', 'vo-thuat'],
     };
 
-    return cachedFetch(cacheKey, async () => {
+    return gatedList(cachedFetch(cacheKey, async () => {
       const slugsToTry = genreAliases[genreSlug] || [genreSlug];
 
       for (const currentSlug of slugsToTry) {
@@ -1542,7 +1587,7 @@ export const movieApi = {
       }
 
       return { status: true, items: [] };
-    });
+    }));
   },
 
   // 7. Lọc theo Quốc gia
@@ -1550,7 +1595,7 @@ export const movieApi = {
     const source = sourceOverride || getActiveApiSource();
     const cacheKey = `country:${countrySlug}:${source}:${page}:${limit}`;
 
-    return cachedFetch(cacheKey, async () => {
+    return gatedList(cachedFetch(cacheKey, async () => {
       if (source === 'kkphim') {
         const raw = await fetchKKPhim<any>(`v1/api/quoc-gia/${countrySlug}`, { page, limit });
         return normalizeMovieList(raw, 'kkphim');
@@ -1575,7 +1620,7 @@ export const movieApi = {
         if (!map.has(m.slug)) map.set(m.slug, m);
       }
       return { status: true, items: Array.from(map.values()) };
-    });
+    }));
   },
 
   // 8. Tìm kiếm đa nguồn & Diễn viên thông minh (Smart Multi-Source & Cast Search)
@@ -1763,7 +1808,7 @@ export const movieApi = {
     const source = sourceOverride || getActiveApiSource();
     const cacheKey = `theater:${source}:${page}:${limit}`;
 
-    return cachedFetch(cacheKey, async () => {
+    return gatedList(cachedFetch(cacheKey, async () => {
       let items: Movie[] = [];
 
       if (source === 'kkphim') {
@@ -1812,7 +1857,7 @@ export const movieApi = {
       }
 
       return { status: true, items: items.slice(0, limit) };
-    });
+    }));
   },
 
   // 11. Chi tiết phim + Danh sách tập (Hỗ trợ đổi nguồn & gộp Server phát).

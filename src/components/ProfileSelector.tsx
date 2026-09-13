@@ -221,28 +221,25 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
   const canAddProfile = profiles.length < 5;
   const activeSelectedProfile = profiles.find((p) => p.id === selectedProfileId);
 
-  // Animation variants
+  // Animation variants — TV-first: fade opacity rẻ, không spring/y/scale
+  // stagger, không blur (mấy thứ này lag trên box yếu).
   const gridContainerVariants: any = {
     hidden: { opacity: 0 },
     show: {
       opacity: 1,
       transition: {
-        staggerChildren: 0.06,
-        delayChildren: 0.05,
+        duration: 0.15,
       },
     },
   };
 
   const cardVariants: any = {
-    hidden: { opacity: 0, y: 20, scale: 0.94 },
+    hidden: { opacity: 0 },
     show: {
       opacity: 1,
-      y: 0,
-      scale: 1,
       transition: {
-        type: 'spring',
-        stiffness: 350,
-        damping: 24,
+        duration: 0.18,
+        ease: 'easeOut',
       },
     },
   };
@@ -314,7 +311,7 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                 className="mb-4 sm:mb-6"
               >
                 <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/10 border border-blue-500/30 text-sky-300 text-xs font-semibold mb-2">
-                  <Sparkles className="w-3.5 h-3.5 text-sky-400 animate-pulse" />
+                  <Sparkles className="w-3.5 h-3.5 text-sky-400" />
                   <span>Đang chuyển sang hồ sơ người xem</span>
                 </div>
                 <h1 className="text-2xl sm:text-4xl md:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white via-sky-100 to-sky-400 tracking-tight">
@@ -366,14 +363,6 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                   aria-label={`Chọn hồ sơ ${profile.name}`}
                   data-tv-card={`profile-${profile.id}`}
                   variants={cardVariants}
-                  whileHover={
-                    !isTransitioning && !isManaging
-                      ? { scale: 1.08, y: -6 }
-                      : !isTransitioning
-                      ? { scale: 1.04, y: -3 }
-                      : undefined
-                  }
-                  whileTap={!isTransitioning ? { scale: 0.94 } : undefined}
                   onClick={() => handleProfileClick(profile)}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
@@ -384,15 +373,14 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                   animate={{
                     opacity: isOtherDimmed ? 0.2 : 1,
                     scale: isThisSelected ? 1.12 : isOtherDimmed ? 0.92 : 1,
-                    filter: isOtherDimmed ? 'blur(1px)' : 'blur(0px)',
                   }}
-                  transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                  transition={{ duration: 0.2, ease: 'easeOut' }}
                   className={`group flex flex-col items-center cursor-pointer select-none relative ${
                     isTransitioning && !isThisSelected ? 'pointer-events-none' : ''
                   }`}
                 >
                   <div
-                    className={`relative w-20 h-20 sm:w-28 sm:h-28 md:w-32 md:h-32 rounded-2xl sm:rounded-3xl overflow-hidden border-2 transition-all duration-300 ${
+                    className={`profile-avatar relative w-20 h-20 sm:w-28 sm:h-28 md:w-32 md:h-32 rounded-2xl sm:rounded-3xl overflow-hidden border-2 transition-all duration-300 ${
                       isThisSelected
                         ? 'shadow-[0_0_35px_rgba(56,189,248,0.7)] ring-4 ring-sky-400'
                         : 'group-hover:shadow-[0_0_30px_rgba(59,130,246,0.5)]'
@@ -412,42 +400,24 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                       style={{ borderColor: profile.color || '#2563EB' }}
                     />
 
-                    {/* Selecting Active Ripple / Pulsing Aura */}
-                    <AnimatePresence>
-                      {isThisSelected && (
-                        <motion.div
-                          initial={{ opacity: 0, scale: 0.8 }}
-                          animate={{ opacity: 1, scale: 1 }}
-                          exit={{ opacity: 0 }}
-                          className="absolute inset-0 bg-sky-500/20 flex items-center justify-center backdrop-blur-[1px]"
-                        >
-                          <motion.div
-                            animate={{ scale: [1, 1.15, 1], opacity: [0.8, 1, 0.8] }}
-                            transition={{ repeat: Infinity, duration: 1.2 }}
-                            className="p-2 rounded-full bg-sky-500/80 text-white shadow-lg"
-                          >
-                            <Check className="w-5 h-5 sm:w-6 sm:h-6 stroke-[3]" />
-                          </motion.div>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                    {/* Selecting check tĩnh (bỏ pulse vô hạn + backdrop-blur: lag TV) */}
+                    {isThisSelected && (
+                      <div className="absolute inset-0 bg-sky-500/20 flex items-center justify-center">
+                        <div className="p-2 rounded-full bg-sky-500/80 text-white shadow-lg">
+                          <Check className="w-5 h-5 sm:w-6 sm:h-6 stroke-[3]" />
+                        </div>
+                      </div>
+                    )}
 
-                    {/* Managing Edit Icon Overlay */}
-                    <AnimatePresence>
-                      {isManaging && !isTransitioning && (
-                        <motion.div
-                          initial={{ opacity: 0 }}
-                          animate={{ opacity: 1 }}
-                          exit={{ opacity: 0 }}
-                          className="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center gap-1 backdrop-blur-xs"
-                        >
-                          <Edit2 className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
-                          <span className="text-[9px] sm:text-[10px] text-sky-200 font-bold uppercase tracking-wider">
-                            {profile.isPrimary ? 'Hồ sơ chính' : 'Sửa'}
-                          </span>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
+                    {/* Managing Edit Icon Overlay (bỏ backdrop-blur + motion: lag TV) */}
+                    {isManaging && !isTransitioning && (
+                      <div className="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center gap-1">
+                        <Edit2 className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
+                        <span className="text-[9px] sm:text-[10px] text-sky-200 font-bold uppercase tracking-wider">
+                          {profile.isPrimary ? 'Hồ sơ chính' : 'Sửa'}
+                        </span>
+                      </div>
+                    )}
 
                     {/* PIN Locked Icon */}
                     {profile.pin && !isManaging && !isThisSelected && (
@@ -493,8 +463,6 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                 aria-label="Thêm hồ sơ mới"
                 data-tv-card="profile-add-new"
                 variants={cardVariants}
-                whileHover={!isTransitioning ? { scale: 1.08, y: -6 } : undefined}
-                whileTap={!isTransitioning ? { scale: 0.94 } : undefined}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
                     e.preventDefault();
@@ -503,7 +471,6 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                 }}
                 animate={{
                   opacity: isTransitioning ? 0.2 : 1,
-                  filter: isTransitioning ? 'blur(1px)' : 'blur(0px)',
                 }}
                 onClick={() => {
                   if (isTransitioning) return;
@@ -519,7 +486,7 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
                   isTransitioning ? 'pointer-events-none' : ''
                 }`}
               >
-                <div className="relative w-20 h-20 sm:w-28 sm:h-28 md:w-32 md:h-32 rounded-2xl sm:rounded-3xl border-2 border-dashed border-slate-700 hover:border-sky-400 bg-slate-900/40 hover:bg-slate-800/60 flex flex-col items-center justify-center transition-all duration-300 group-hover:shadow-[0_0_20px_rgba(56,189,248,0.3)]">
+                <div className="profile-avatar relative w-20 h-20 sm:w-28 sm:h-28 md:w-32 md:h-32 rounded-2xl sm:rounded-3xl border-2 border-dashed border-slate-700 hover:border-sky-400 bg-slate-900/40 hover:bg-slate-800/60 flex flex-col items-center justify-center transition-all duration-300 group-hover:shadow-[0_0_20px_rgba(56,189,248,0.3)]">
                   <Plus className="w-6 h-6 sm:w-8 sm:h-8 text-slate-400 group-hover:text-sky-300 transition-colors" />
                   <span className="text-[9px] sm:text-[10px] text-slate-400 group-hover:text-slate-200 mt-0.5 font-semibold">
                     ({profiles.length}/5)
@@ -533,24 +500,18 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
           </motion.div>
 
           {/* Manage Profiles Toggle Button */}
-          <motion.button
+          <button
             id="manage-profiles-toggle-btn"
-            whileHover={!isTransitioning ? { scale: 1.04 } : undefined}
-            whileTap={!isTransitioning ? { scale: 0.96 } : undefined}
-            animate={{
-              opacity: isTransitioning ? 0 : 1,
-              pointerEvents: isTransitioning ? 'none' : 'auto',
-            }}
-            transition={{ duration: 0.2 }}
+            disabled={isTransitioning}
             onClick={() => setIsManaging(!isManaging)}
-            className={`px-6 sm:px-8 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-bold tracking-wider uppercase transition-all duration-200 cursor-pointer ${
+            className={`px-6 sm:px-8 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-bold tracking-wider uppercase transition-all duration-200 cursor-pointer disabled:opacity-0 disabled:pointer-events-none ${
               isManaging
                 ? 'bg-blue-600 text-white hover:bg-blue-500 shadow-lg shadow-blue-600/40'
                 : 'border border-slate-700 text-slate-300 hover:text-white hover:border-sky-400 hover:bg-slate-800/60'
             }`}
           >
             {isManaging ? 'Hoàn tất quản lý' : 'Quản lý hồ sơ'}
-          </motion.button>
+          </button>
         </div>
 
         {/* Footer Info */}
@@ -567,12 +528,12 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
       {/* --- MODAL 1: ADD NEW PROFILE --- */}
       <AnimatePresence>
         {isAddProfileOpen && (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3.5 sm:p-4">
+          <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3.5 sm:p-4">
             <motion.div
               initial={{ opacity: 0, scale: 0.92, y: 16 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 8 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+              transition={{ duration: 0.15, ease: 'easeOut' }}
               className="w-full max-w-md bg-[#0f172a] border border-blue-900/80 rounded-3xl p-5 sm:p-6 text-white shadow-2xl max-h-[90vh] overflow-y-auto"
             >
               <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-800">
@@ -717,12 +678,12 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
       {/* --- MODAL 2: EDIT PROFILE --- */}
       <AnimatePresence>
         {editingProfile && (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3.5 sm:p-4">
+          <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3.5 sm:p-4">
             <motion.div
               initial={{ opacity: 0, scale: 0.92, y: 16 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 8 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+              transition={{ duration: 0.15, ease: 'easeOut' }}
               className="w-full max-w-md bg-[#0f172a] border border-blue-900/80 rounded-3xl p-5 sm:p-6 text-white shadow-2xl max-h-[90vh] overflow-y-auto"
             >
               <div className="flex items-center justify-between pb-3 mb-4 border-b border-slate-800">
@@ -877,12 +838,12 @@ export const ProfileSelector: React.FC<ProfileSelectorProps> = ({
       {/* --- MODAL 3: PIN PROMPT --- */}
       <AnimatePresence>
         {pinPromptProfile && (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3.5 sm:p-4">
+          <div className="fixed inset-0 z-50 bg-black/85 flex items-center justify-center p-3.5 sm:p-4">
             <motion.div
               initial={{ opacity: 0, scale: 0.92, y: 16 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95, y: 8 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 28 }}
+              transition={{ duration: 0.15, ease: 'easeOut' }}
               className="w-full max-w-sm bg-[#0f172a] border border-blue-900/80 rounded-3xl p-5 sm:p-6 text-white text-center shadow-2xl"
             >
               <div

@@ -37,6 +37,72 @@ function isEditable(el: Element | null): boolean {
   return false;
 }
 
+const TV_TEXT_INPUT_SEL =
+  'input:not([type]),input[type="text"],input[type="search"],input[type="password"],' +
+  'input[type="number"],input[type="email"],input[type="url"],input[type="tel"],textarea';
+
+/** Ô nhập chữ (loại trừ nút/range/checkbox/select — mấy thứ này không bung IME). */
+export function isTvTextInput(
+  el: Element | null,
+): el is HTMLInputElement | HTMLTextAreaElement {
+  try {
+    if (!el || !(el instanceof HTMLElement)) return false;
+    if ((el as HTMLInputElement).disabled) return false;
+    return (el as HTMLElement).matches?.(TV_TEXT_INPUT_SEL) ?? false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Khóa IME khi chỉ lướt qua (readonly): D-pad focus vào không bung bàn phím.
+ * Chỉ lướt trên TV mới cần; desktop/mobile không đụng.
+ */
+export function armTvInputReadonly(el: HTMLElement): void {
+  try {
+    if (!isTvTextInput(el)) return;
+    if (el.hasAttribute('data-tv-editing')) return;
+    el.setAttribute('readonly', '');
+  } catch {}
+}
+
+/**
+ * Bấm OK vào ô đang khóa -> mở khóa + dời focus để WebView chắc chắn gọi IME.
+ * Thứ tự blur trước, gắn cờ editing sau để handler focusout không khóa lại.
+ */
+export function enterTvEditMode(el: HTMLElement): boolean {
+  try {
+    if (!isTvTextInput(el)) return false;
+    el.removeAttribute('readonly');
+    try {
+      (el as HTMLElement).blur();
+    } catch {}
+    el.setAttribute('data-tv-editing', '1');
+    markProgrammaticFocus();
+    const target = el;
+    requestAnimationFrame(() => {
+      try {
+        target.focus({ preventScroll: true } as FocusOptions);
+      } catch {
+        try {
+          target.focus();
+        } catch {}
+      }
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Rời ô (blur) -> khóa lại, lần D-pad sau lướt qua không bung phím. */
+export function exitTvEditMode(el: HTMLElement): void {
+  try {
+    el.removeAttribute('data-tv-editing');
+    if (isTvTextInput(el)) el.setAttribute('readonly', '');
+  } catch {}
+}
+
 const FOCUSABLE_SEL =
   'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -599,6 +665,42 @@ export function focusNearest(dir: TvDirection): boolean {
         }
       }
     } catch {}
+    // Điều hướng khai báo theo markup: data-tv-up/right/down/left="selector"
+    // (kế thừa qua closest nên đặt ở container cũng ăn). Ưu tiên trước mọi
+    // scoring hình học — dùng cho layout lưới form (trang filter) nơi scorer
+    // đoán sai (chip phải -> rớt xuống lưới phim thay vì nút Áp dụng...).
+    // Target chưa sẵn sàng thì bỏ qua để scorer chung xử lý (không nuốt phím).
+    try {
+      const attr =
+        dir === 'left'
+          ? 'data-tv-left'
+          : dir === 'right'
+          ? 'data-tv-right'
+          : dir === 'up'
+          ? 'data-tv-up'
+          : 'data-tv-down';
+      const scoped = active.closest?.(`[${attr}]`) as HTMLElement | null;
+      const sel = scoped?.getAttribute?.(attr) || '';
+      if (sel) {
+        const t = document.querySelector<HTMLElement>(sel);
+        if (t && t !== active) {
+          const r = cachedRect(t);
+          if (r.width > 4 && r.height > 4) {
+            markProgrammaticFocus();
+            setLastTvMove(
+              `explicit-${dir} from ${describeEl(active)} to ${describeEl(t)}`,
+            );
+            try {
+              t.focus({ preventScroll: true } as FocusOptions);
+            } catch {
+              t.focus();
+            }
+            tvScrollIntoView(t);
+            return true;
+          }
+        }
+      }
+    } catch {}
     // Modal fullscreen đang mở (detail/player-overlay...) mà focus còn kẹt
     // ở nền phía sau: lôi focus vào trong modal, không cho đi lang thang.
     try {
@@ -846,8 +948,22 @@ export function handleTvKey(e: KeyboardEvent): boolean {
   const target = e.target as HTMLElement | null;
   const k = e.key;
 
-  // Đang gõ chữ: chỉ cho phép Escape blur, còn lại để input xử lý
-  if (isEditable(target)) {
+  // TV: ô chữ đang KHÓA (readonly, chỉ lướt qua) thì đối xử như nút thường:
+  // arrows đi tiếp (không kẹt vào caret), OK mới mở bàn phím. Tránh WebView
+  // tự bung IME mỗi lần D-pad lướt ngang qua ô input.
+  if (isTvTextInput(target) && !target.hasAttribute('data-tv-editing')) {
+    if (k === 'Enter' || k === 'NumpadEnter' || k === ' ') {
+      return enterTvEditMode(target);
+    }
+    if (k === 'Escape') {
+      try {
+        (target as HTMLElement).blur();
+      } catch {}
+      return true;
+    }
+    // Còn lại (arrows...) rớt xuống điều hướng D-pad chung bên dưới.
+  } else if (isEditable(target)) {
+    // Đang gõ chữ (đã OK vào ô): chỉ cho phép Escape blur, còn lại để input xử lý
     if (k === 'Escape') {
       try {
         (target as HTMLElement).blur();

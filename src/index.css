@@ -205,6 +205,15 @@ video::-webkit-media-controls {
   background-color: rgba(37, 99, 235, 0.4) !important;
   color: #fff !important;
 }
+/* Ô search navbar: bỏ mọi khung (outline + border + glow), focus chỉ đổi
+   nền như nút navbar — sạch, đúng kiểu Netflix. */
+.tv-mode #qtb-navbar input:focus,
+.tv-mode #qtb-navbar input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  border-color: transparent !important;
+  background-color: rgba(37, 99, 235, 0.25) !important;
+}
 /* Dialog (Confirm/Custom): 2 nút cùng màu nền, focus = nền đậm/nhạt hơn, KHÔNG outline
    (đè rule .tv-mode *:focus-visible / 1920px *:focus-visible chỉ riêng nút trong dialog).
    NGOẠI TRỪ #movie-detail-fullpage: nó cũng role=dialog nhưng nút hero/tập phim
@@ -307,18 +316,29 @@ video::-webkit-media-controls {
   box-shadow: none !important;
 }
 .tv-mode [data-tv-card] { transition: transform 0.18s ease-out !important; }
-/* Profile selector trên TV: hàng phim chỉ zoom thôi, però card hồ sơ đang chọn
-   phải có viền/outline sáng để user jelas biết nào đang focus (D-pad remote).
-   (Rule generic .tv-mode [data-tv-card]:focus kill outline/box-shadow; ID này củ đặc đầu.) */
+/* Profile selector trên TV: outline CHỈ ôm avatar (không ôm cả tên bên dưới).
+   Card chỉ là vùng bấm, tắt zoom/viền cấp card; vòng sáng vẽ trên .profile-avatar. */
 .tv-mode #qtb-profile-selector [data-tv-card]:focus,
 .tv-mode #qtb-profile-selector [data-tv-card]:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+  transform: none;
+  z-index: 20;
+  position: relative;
+}
+.tv-mode #qtb-profile-selector .profile-avatar {
+  transition: transform 0.18s ease-out, box-shadow 0.18s ease-out !important;
+}
+.tv-mode #qtb-profile-selector [data-tv-card]:focus .profile-avatar,
+.tv-mode #qtb-profile-selector [data-tv-card]:focus-visible .profile-avatar {
+  transform: scale(1.06);
   outline: 3px solid rgba(56, 189, 248, 0.95) !important;
   outline-offset: 3px !important;
   box-shadow: 0 0 0 6px rgba(125, 211, 252, 0.28), 0 0 22px rgba(56, 189, 248, 0.55) !important;
 }
 @media (min-width: 1920px) {
-  .tv-mode #qtb-profile-selector [data-tv-card]:focus,
-  .tv-mode #qtb-profile-selector [data-tv-card]:focus-visible {
+  .tv-mode #qtb-profile-selector [data-tv-card]:focus .profile-avatar,
+  .tv-mode #qtb-profile-selector [data-tv-card]:focus-visible .profile-avatar {
     outline: 4px solid #38bdf8 !important;
     outline-offset: 3px !important;
     box-shadow: 0 0 0 8px rgba(56, 189, 248, 0.3), 0 0 28px rgba(56, 189, 248, 0.6) !important;
@@ -341,10 +361,7 @@ video::-webkit-media-controls {
 }
 /* Hero detail TV gọn: không bao giờ cần scroll trong (1 màn hình là đủ) */
 .tv-mode #detail-hero-tv { contain: layout style; }
-/* Player TV kiểu Netflix: bỏ nút X (thoát bằng BACK), giữ desktop/mobile */
-.tv-mode #gau-player-root button[aria-label="Thoát"] {
-  display: none !important;
-}
+/* Player không có nút X — thoát duy nhất bằng BACK remote. */
 /* Timeline TV: focus phải NHÌN THẤY RÕ (track sáng + núm to + glow) */
 .tv-mode .group\/scrub:focus-visible .scrub-track {
   background: rgba(255, 255, 255, 0.4) !important;

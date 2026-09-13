@@ -6,6 +6,7 @@ import {
   setDoc,
   updateDoc,
   deleteDoc,
+  onSnapshot,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, isFirestoreQuotaExhausted, OperationType, sanitizeData } from './firebase';
 import { SystemApiEndpoint, ApiCategory, ApiHealthStatus } from '../types';
@@ -176,6 +177,9 @@ const LOCAL_STORAGE_KEY = 'qtb_system_apis_cache_v3';
 class SystemApiService {
   private inMemoryApis: SystemApiEndpoint[] = [];
   private isInitialized = false;
+  private realtimeUnsub: (() => void) | null = null;
+  private lastEnabledKey = '';
+  private enabledListeners = new Set<() => void>();
 
   constructor() {
     this.loadFromLocalStorage();
@@ -642,6 +646,65 @@ class SystemApiService {
     return this.inMemoryApis
       .filter((a) => a.category === category && a.enabled)
       .sort((a, b) => (a.priority || 99) - (b.priority || 99));
+  }
+
+  /** Đăng ký nghe đổi tập enabled (để bust cache phim...). */
+  onEnabledChange(cb: () => void): () => void {
+    this.enabledListeners.add(cb);
+    return () => {
+      this.enabledListeners.delete(cb);
+    };
+  }
+
+  private emitEnabledChange(): void {
+    try {
+      this.enabledListeners.forEach((cb) => {
+        try {
+          cb();
+        } catch {}
+      });
+    } catch {}
+  }
+
+  /**
+   * Realtime sync từ Firestore sang mọi thiết bị (kể cả TV khác mạng admin).
+   * Trước đây TV chỉ đọc localStorage của chính nó + event cùng-tab nên
+   * toggle của admin không bao giờ tới được TV.
+   */
+  subscribeRealtime(): () => void {
+    if (this.realtimeUnsub) return this.realtimeUnsub;
+    // Refresh 1 phát ngay (phòng snapshot chậm/chặn).
+    this.getAllApis().catch(() => {});
+    try {
+      const colRef = collection(db, 'system_apis');
+      this.realtimeUnsub = onSnapshot(
+        colRef,
+        (snap) => {
+          try {
+            if (snap.empty) return;
+            const list = snap.docs.map((d) => d.data() as SystemApiEndpoint);
+            const existingIds = new Set(list.map((a) => a.id));
+            for (const def of DEFAULT_SYSTEM_APIS) {
+              if (!existingIds.has(def.id)) list.push(def);
+            }
+            list.sort((a, b) => (a.priority || 99) - (b.priority || 99));
+            const key = list
+              .filter((a) => a.enabled)
+              .map((a) => a.id)
+              .sort()
+              .join(',');
+            const first = !this.lastEnabledKey;
+            const changed = !first && key !== this.lastEnabledKey;
+            this.lastEnabledKey = key;
+            this.isInitialized = true;
+            this.saveToLocalStorage(list);
+            if (changed) this.emitEnabledChange();
+          } catch {}
+        },
+        () => {},
+      );
+    } catch {}
+    return () => {};
   }
 }
 

@@ -1,13 +1,16 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
 import { Movie, MovieListPagination, ApiSource } from '../types';
 import { COUNTRIES, GENRES, YEARS, movieApi, API_SOURCES } from '../services/movieApi';
+import { TvSelect } from './TvSelect';
 import { systemApiService } from '../services/systemApiService';
 import { MovieCard } from './MovieCard';
-import { Filter, Search, ChevronLeft, ChevronRight, Sparkles, RefreshCw, Database, Server } from 'lucide-react';
+import { Filter, ChevronLeft, ChevronRight, Sparkles, Database } from 'lucide-react';
 
 interface FilterSectionProps {
   initialType?: string;
   fixedType?: string;
+  /** Lưới trần cho tab thể loại: chỉ tiêu đề + lưới + phân trang, không filter UI. */
+  plain?: boolean;
   initialGenre?: string;
   initialCountry?: string;
   initialKeyword?: string;
@@ -22,6 +25,7 @@ interface FilterSectionProps {
 export const FilterSection: React.FC<FilterSectionProps> = ({
   initialType = 'all',
   fixedType,
+  plain = false,
   initialGenre = '',
   initialCountry = '',
   initialKeyword = '',
@@ -44,6 +48,45 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
   const [enabledVersion, setEnabledVersion] = useState(0);
+
+  // App TV-only: mọi lựa chọn chỉ ghi vào draft, bấm OK "Áp dụng" mới filter.
+  // Lia D-pad không load từng nấc, lưới kết quả không remount làm mất focus.
+  const [draftGenre, setDraftGenre] = useState<string>(initialGenre);
+  const [draftCountry, setDraftCountry] = useState<string>(initialCountry);
+  const [draftType, setDraftType] = useState<string>(actualInitialType);
+  const [draftSource, setDraftSource] = useState<ApiSource>(movieApi.getActiveSource());
+  const [draftKeyword, setDraftKeyword] = useState<string>(initialKeyword);
+  const applyClickedRef = useRef(false);
+
+  const shownGenre = draftGenre;
+  const shownCountry = draftCountry;
+  const shownType = draftType;
+  const shownSource = draftSource;
+  const shownKeyword = draftKeyword;
+
+  const setGenreVal = (v: string) => setDraftGenre(v);
+  const setCountryVal = (v: string) => setDraftCountry(v);
+  const setTypeVal = (v: string) => setDraftType(v);
+  const setSourceVal = (v: ApiSource) => setDraftSource(v);
+  const setKeywordVal = (v: string) => setDraftKeyword(v);
+  const applyFilters = () => {
+    setSelectedGenre(draftGenre);
+    setSelectedCountry(draftCountry);
+    setMovieType(draftType);
+    setSelectedSource(draftSource);
+    try {
+      movieApi.setSource(draftSource);
+    } catch {}
+    setKeyword(draftKeyword);
+    setCurrentPage(1);
+    applyClickedRef.current = true;
+  };
+  const isDirty =
+    draftGenre !== selectedGenre ||
+    draftCountry !== selectedCountry ||
+    draftType !== movieType ||
+    draftSource !== selectedSource ||
+    draftKeyword !== keyword;
 
   const handlePlay = onPlay || onPlayMovie || (() => {});
   const handleOpenDetail = onOpenDetail || onSelectMovie || (() => {});
@@ -93,27 +136,43 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
   useEffect(() => {
     if (!isSourceEnabled(selectedSource)) {
       setSelectedSource('all');
+      setDraftSource('all');
       movieApi.setSource('all');
       setCurrentPage(1);
+    } else if (!isSourceEnabled(draftSource)) {
+      setDraftSource('all');
     }
   }, [enabledVersion, selectedSource]);
 
   const checkIsInMyList = (slug: string) =>
     typeof isInMyList === 'function' ? isInMyList(slug) : Boolean(isInMyList);
 
-  // Sync props if changed
+  // Sync props if changed (TV: đồng bộ cả draft lẫn applied)
   useEffect(() => {
     const t = fixedType || initialType;
-    if (t) setMovieType(t);
-    if (initialGenre) setSelectedGenre(initialGenre);
-    if (initialCountry) setSelectedCountry(initialCountry);
+    if (t) {
+      setMovieType(t);
+      setDraftType(t);
+    }
+    if (initialGenre) {
+      setSelectedGenre(initialGenre);
+      setDraftGenre(initialGenre);
+    }
+    if (initialCountry) {
+      setSelectedCountry(initialCountry);
+      setDraftCountry(initialCountry);
+    }
     if (initialKeyword !== undefined) {
       setKeyword(initialKeyword);
+      setDraftKeyword(initialKeyword);
       // If a search keyword is passed (e.g. from clicking an actor), clear specific category/country filters to avoid over-filtering
       if (initialKeyword.trim() && !fixedType) {
         setSelectedGenre('');
         setSelectedCountry('');
         setMovieType('all');
+        setDraftGenre('');
+        setDraftCountry('');
+        setDraftType('all');
       }
     }
     setCurrentPage(1);
@@ -213,7 +272,8 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [movieType, selectedGenre, selectedCountry, keyword, currentPage, selectedSource]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [movieType, selectedGenre, selectedCountry, keyword, currentPage, selectedSource, enabledVersion]);
 
   const handleResetFilters = () => {
     setMovieType('all');
@@ -221,8 +281,35 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
     setSelectedCountry('');
     setSelectedSource('all');
     setKeyword('');
+    setDraftType('all');
+    setDraftGenre('');
+    setDraftCountry('');
+    setDraftSource('all');
+    setDraftKeyword('');
     setCurrentPage(1);
   };
+
+  // Sau khi Áp dụng xong, đưa focus xuống card đầu của lưới mới (nếu
+  // focus đang ở nút Áp dụng) để D-pad đi tiếp được ngay, không kẹt.
+  useEffect(() => {
+    if (!applyClickedRef.current || isLoading) return;
+    applyClickedRef.current = false;
+    try {
+      const ae = document.activeElement as HTMLElement | null;
+      if (!ae || ae.id !== 'filter-apply-btn') return;
+      const first = document.querySelector<HTMLElement>(
+        '#filter-results-grid [data-tv-card]',
+      );
+      if (!first) return;
+      const r = first.getBoundingClientRect();
+      if (r.width <= 4 || r.height <= 4) return;
+      try {
+        first.focus({ preventScroll: true } as FocusOptions);
+      } catch {
+        first.focus();
+      }
+    } catch {}
+  }, [movies, isLoading]);
 
   return (
     <div id="filter-explore-page" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-24 pb-16">
@@ -250,19 +337,10 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
           </p>
         </div>
 
-        {/* Reset Filter Button */}
-        {(selectedGenre || selectedCountry || keyword || movieType !== 'all' || selectedSource !== 'all') && (
-          <button
-            onClick={handleResetFilters}
-            className="flex items-center gap-1.5 self-start text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3.5 py-2 rounded-xl border border-slate-700 cursor-pointer shadow"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-            <span>Xóa bộ lọc</span>
-          </button>
-        )}
       </div>
 
-      {/* API Source Selector Tabs */}
+      {/* API Source Selector Tabs (ẩn ở tab thể loại plain) */}
+      {!plain && (
       <div className="mb-6">
         <div className="flex items-center gap-2 mb-2.5">
           <Database className="w-4 h-4 text-sky-400" />
@@ -270,18 +348,17 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
         </div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
           {visibleSources.map((source) => {
-            const isSelected = selectedSource === source.id;
+            const isSelected = shownSource === source.id;
+            const isPending = draftSource === source.id && selectedSource !== source.id;
             return (
               <button
                 key={source.id}
-                onClick={() => {
-                  setSelectedSource(source.id);
-                  movieApi.setSource(source.id);
-                  setCurrentPage(1);
-                }}
+                onClick={() => setSourceVal(source.id)}
                 className={`p-3 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  isSelected
+                  isSelected && !isPending
                     ? 'bg-blue-950/80 border-blue-500 shadow-lg shadow-blue-950/60 ring-1 ring-blue-500'
+                    : isPending
+                    ? 'bg-blue-950/40 border-dashed border-sky-500/70 text-slate-200'
                     : 'bg-[#0f172a] border-slate-800 hover:border-slate-700 text-slate-300'
                 }`}
               >
@@ -312,27 +389,37 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
           })}
         </div>
       </div>
+      )}
 
-      {/* Filter Controls Bar */}
+      {/* Filter Controls Bar (ẩn ở tab thể loại plain) */}
+      {!plain && (
       <div className="bg-[#0f172a] border border-blue-900/60 rounded-2xl p-4 sm:p-5 mb-8 space-y-4 shadow-xl">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {/* Keyword Search */}
-          <div>
+          <div data-tv-right="#filter-type-btn">
             <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5">
               Từ khóa tìm kiếm:
             </label>
             <div className="relative">
               <input
+                id="filter-keyword-input"
                 type="text"
                 placeholder="Nhập tên phim, diễn viên..."
-                value={keyword}
-                onChange={(e) => {
-                  setKeyword(e.target.value);
-                  setCurrentPage(1);
+                value={shownKeyword}
+                onChange={(e) => setKeywordVal(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter khi đang gõ = Áp dụng luôn, khỏi lia xuống nút.
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    applyFilters();
+                    try {
+                      (e.target as HTMLInputElement).blur();
+                    } catch {}
+                  }
                 }}
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
               />
-              {keyword && (
+              {shownKeyword && (
                 <button
                   type="button"
                   onMouseDown={(e) => {
@@ -342,8 +429,7 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    setKeyword('');
-                    setCurrentPage(1);
+                    setKeywordVal('');
                   }}
                   className="absolute right-3 top-3 text-slate-400 hover:text-white text-sm p-0.5 cursor-pointer"
                   aria-label="Xóa từ khóa"
@@ -355,92 +441,110 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
           </div>
 
           {/* Type Selector */}
-          <div>
+          <div data-tv-left="#filter-keyword-input">
             <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5">
               Định dạng phim:
             </label>
-            <select
-              value={movieType}
-              onChange={(e) => {
-                setMovieType(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-blue-500 cursor-pointer transition-colors"
-            >
-              <option value="all">Tất cả định dạng</option>
-              <option value="series">Phim Bộ (Nhiều tập)</option>
-              <option value="single">Phim Lẻ (Chiếu rạp / 1 tập)</option>
-              <option value="anime">Hoạt Hình & Anime</option>
-              <option value="tv-shows">TV Shows / Game Shows</option>
-            </select>
+            <TvSelect
+              id="filter-type-btn"
+              label="Định dạng phim"
+              value={shownType}
+              onChange={setTypeVal}
+              options={[
+                { value: 'all', label: 'Tất cả định dạng' },
+                { value: 'series', label: 'Phim Bộ (Nhiều tập)' },
+                { value: 'single', label: 'Phim Lẻ (Chiếu rạp / 1 tập)' },
+                { value: 'anime', label: 'Hoạt Hình & Anime' },
+                { value: 'tv-shows', label: 'TV Shows / Game Shows' },
+              ]}
+            />
           </div>
 
           {/* Genre Selector */}
-          <div>
+          <div data-tv-right="#filter-country-btn">
             <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5">
               Thể loại:
             </label>
-            <select
-              value={selectedGenre}
-              onChange={(e) => {
-                setSelectedGenre(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-blue-500 cursor-pointer transition-colors"
-            >
-              <option value="">Tất cả thể loại</option>
-              {GENRES.map((g) => (
-                <option key={g.slug} value={g.slug}>
-                  {g.name}
-                </option>
-              ))}
-            </select>
+            <TvSelect
+              id="filter-genre-btn"
+              label="Thể loại"
+              value={shownGenre}
+              onChange={setGenreVal}
+              options={[
+                { value: '', label: 'Tất cả thể loại' },
+                ...GENRES.map((g) => ({ value: g.slug, label: g.name })),
+              ]}
+            />
           </div>
 
           {/* Country Selector */}
-          <div>
+          <div data-tv-left="#filter-genre-btn">
             <label className="block text-[11px] font-bold text-slate-400 uppercase mb-1.5">
               Quốc gia:
             </label>
-            <select
-              value={selectedCountry}
-              onChange={(e) => {
-                setSelectedCountry(e.target.value);
-                setCurrentPage(1);
-              }}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2.5 text-base sm:text-sm text-white focus:outline-none focus:border-blue-500 cursor-pointer transition-colors"
-            >
-              <option value="">Tất cả quốc gia</option>
-              {COUNTRIES.map((c) => (
-                <option key={c.slug} value={c.slug}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            <TvSelect
+              id="filter-country-btn"
+              label="Quốc gia"
+              value={shownCountry}
+              onChange={setCountryVal}
+              options={[
+                { value: '', label: 'Tất cả quốc gia' },
+                ...COUNTRIES.map((c) => ({ value: c.slug, label: c.name })),
+              ]}
+            />
           </div>
         </div>
 
         {/* Quick Genre Pills */}
-        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-1 scrollbar-none text-xs">
+        <div
+          id="filter-suggest-row"
+          data-tv-down="#filter-apply-btn"
+          className="flex items-center gap-1.5 overflow-x-auto pb-1 pt-1 scrollbar-none text-xs"
+        >
           <span className="text-slate-400 shrink-0 mr-1 font-medium">Gợi ý:</span>
-          {GENRES.slice(0, 8).map((g) => (
+          {GENRES.slice(0, 8).map((g) => {
+            const active = shownGenre === g.slug;
+            const pendingChip = active && selectedGenre !== g.slug;
+            return (
             <button
               key={g.slug}
-              onClick={() => {
-                setSelectedGenre(selectedGenre === g.slug ? '' : g.slug);
-                setCurrentPage(1);
-              }}
+              onClick={() => setGenreVal(shownGenre === g.slug ? '' : g.slug)}
               className={`px-3 py-1 rounded-full text-xs shrink-0 transition-colors cursor-pointer ${
-                selectedGenre === g.slug
+                active && !pendingChip
                   ? 'bg-blue-600 text-white font-bold shadow-md shadow-blue-600/30'
+                  : pendingChip
+                  ? 'bg-blue-900/60 text-sky-200 font-bold border border-dashed border-sky-500/70'
                   : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border border-slate-700'
               }`}
             >
               {g.name}
             </button>
-          ))}
+            );
+          })}
         </div>
+        {/* Chọn xong bấm OK mới lọc (không load từng nấc khi lia D-pad) */}
+          <div className="flex items-center gap-3 pt-1">
+            <button
+              id="filter-apply-btn"
+              data-tv-up="#filter-suggest-row button"
+              onClick={applyFilters}
+              className={`flex items-center gap-2 px-6 py-3 rounded-2xl font-extrabold text-sm transition-all cursor-pointer ${
+                isDirty
+                  ? 'bg-blue-600 text-white shadow-xl shadow-blue-600/40'
+                  : 'bg-slate-800 text-slate-400 border border-slate-700'
+              }`}
+            >
+              <Filter className="w-4 h-4" />
+              <span>Áp dụng bộ lọc{isDirty ? ' •' : ''}</span>
+            </button>
+            {isDirty && (
+              <span className="text-xs text-amber-300 font-semibold">
+                Có thay đổi chưa áp dụng
+              </span>
+            )}
+          </div>
       </div>
+      )}
 
       {/* Movie Results Grid */}
       {keyword && (
@@ -482,7 +586,7 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
         </div>
       ) : movies.length > 0 ? (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5 sm:gap-7 lg:gap-8">
+          <div id="filter-results-grid" className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-5 sm:gap-7 lg:gap-8">
             {movies.map((movie, idx) => (
               <div key={`${movie.slug || movie._id || 'filter'}-${idx}`} className="flex justify-center">
                 <MovieCard
@@ -503,7 +607,7 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
               disabled={currentPage <= 1}
               onClick={() => {
                 setCurrentPage((p) => Math.max(1, p - 1));
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+                window.scrollTo(0, 0);
               }}
               className="flex items-center gap-1 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-40 disabled:pointer-events-none text-xs font-semibold text-white border border-slate-700 cursor-pointer"
             >
@@ -520,7 +624,7 @@ export const FilterSection: React.FC<FilterSectionProps> = ({
               id="pagination-next-btn"
               onClick={() => {
                 setCurrentPage((p) => p + 1);
-                window.scrollTo({ top: 0, behavior: 'smooth' });
+                window.scrollTo(0, 0);
               }}
               className="flex items-center gap-1 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-semibold text-white border border-slate-700 cursor-pointer"
             >
