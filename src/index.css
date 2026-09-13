@@ -206,11 +206,28 @@ video::-webkit-media-controls {
   color: #fff !important;
 }
 /* Dialog (Confirm/Custom): 2 nút cùng màu nền, focus = nền đậm/nhạt hơn, KHÔNG outline
-   (đè rule .tv-mode *:focus-visible / 1920px *:focus-visible chỉ riêng nút trong dialog) */
-[role="dialog"] button:focus,
-[role="dialog"] button:focus-visible {
+   (đè rule .tv-mode *:focus-visible / 1920px *:focus-visible chỉ riêng nút trong dialog).
+   NGOẠI TRỪ #movie-detail-fullpage: nó cũng role=dialog nhưng nút hero/tập phim
+   BẮT BUỘC có vòng focus nhìn thấy được trên TV. */
+[role="dialog"]:not(#movie-detail-fullpage) button:focus,
+[role="dialog"]:not(#movie-detail-fullpage) button:focus-visible {
   outline: none !important;
   box-shadow: none !important;
+}
+/* TV detail hero: nút Xem/Lưu focus phải NHÌN THẤY RÕ (zoom + viền xanh).
+   Trước đây rule dialog blanket ở trên đã kill outline + ring của 2 nút này. */
+.tv-mode #detail-hero-tv [data-tv-autofocus],
+.tv-mode #detail-hero-tv [data-tv-save] {
+  transition: transform 0.18s ease-out, box-shadow 0.18s ease-out !important;
+}
+.tv-mode #detail-hero-tv [data-tv-autofocus]:focus,
+.tv-mode #detail-hero-tv [data-tv-autofocus]:focus-visible,
+.tv-mode #detail-hero-tv [data-tv-save]:focus,
+.tv-mode #detail-hero-tv [data-tv-save]:focus-visible {
+  outline: 3px solid rgba(56, 189, 248, 0.95) !important;
+  outline-offset: 3px !important;
+  transform: scale(1.06);
+  box-shadow: 0 0 0 6px rgba(125, 211, 252, 0.28), 0 0 22px rgba(56, 189, 248, 0.55) !important;
 }
 /* Lưới an toàn khi tv-mode chưa kịp bật / detect hụt trên TV thật:
    diệt viền vàng mặc định của WebView, thay bằng ring xanh thương hiệu.
@@ -315,6 +332,32 @@ video::-webkit-media-controls {
 }
 /* TV giữ nguyên cỡ desktop: không phóng to chữ/nút ở navbar, hàng phim,
    trang chi tiết, login, dialog (revert 10-foot scaling theo yêu cầu). */
+
+/* TV perf mode: hàng dưới fold không render trước (giảm spike scroll dọc).
+   contain-intrinsic-size giữ chỗ để không trượt focus/layout shift. */
+.tv-mode .group\/row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 320px;
+}
+/* Hero detail TV gọn: không bao giờ cần scroll trong (1 màn hình là đủ) */
+.tv-mode #detail-hero-tv { contain: layout style; }
+/* Player TV kiểu Netflix: bỏ nút X (thoát bằng BACK), giữ desktop/mobile */
+.tv-mode #gau-player-root button[aria-label="Thoát"] {
+  display: none !important;
+}
+/* Timeline TV: focus phải NHÌN THẤY RÕ (track sáng + núm to + glow) */
+.tv-mode .group\/scrub:focus-visible .scrub-track {
+  background: rgba(255, 255, 255, 0.4) !important;
+  height: 10px !important;
+}
+.tv-mode .group\/scrub:focus-visible .scrub-progress {
+  background: #38bdf8 !important;
+}
+.tv-mode .group\/scrub:focus-visible .scrub-progress::after {
+  width: 20px !important;
+  height: 20px !important;
+  box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.45), 0 0 16px rgba(56, 189, 248, 0.6) !important;
+}
 
 
 

@@ -46,6 +46,11 @@ interface MovieDetailModalProps {
   currentAccount?: Account | null;
   activeProfile?: UserProfile | null;
   onShowToast?: (msg: string, type?: 'info' | 'success' | 'error' | 'warning') => void;
+  /** Mở từ tap (vs deep-link): App giữ shell DOM ngoài tới khi sẵn sàng,
+   *  modal bỏ overlay riêng để chỉ có ĐÚNG 1 loading. */
+  externalLoadingRef?: { current: boolean };
+  /** Báo App khi loading xong/lỗi/unmount để gỡ shell ngoài (kèm slug chủ). */
+  onReady?: (slug?: string) => void;
 }
 
 export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
@@ -62,7 +67,11 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
   currentAccount,
   activeProfile,
   onShowToast,
+  externalLoadingRef,
+  onReady,
 }) => {
+  const isExternalLoading = externalLoadingRef?.current === true;
+  const readyFiredRef = useRef(false);
   const [fullMovieData, setFullMovieData] = useState<Movie | null>(null);
   const [episodes, setEpisodes] = useState<EpisodeServer[]>([]);
   const [selectedServerIndex, setSelectedServerIndex] = useState(0);
@@ -75,6 +84,24 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const isTv = useTvMode();
+
+  // Shell ngoài (App) gỡ khi modal sẵn sàng: loading xong hoặc lỗi.
+  useEffect(() => {
+    if (isLoading || readyFiredRef.current) return;
+    readyFiredRef.current = true;
+    try {
+      onReady?.(movie?.slug);
+    } catch {}
+  }, [isLoading, onReady, movie?.slug]);
+  // Unmount giữa chừng (Back sớm / browser-back) cũng gỡ shell của đúng mình.
+  useEffect(() => {
+    return () => {
+      try {
+        onReady?.(movie?.slug);
+      } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Lock background scroll while modal is open to ensure only 1 scrollbar exists
   useEffect(() => {
@@ -352,6 +379,8 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
     return getImageUrl(currentData.thumb_url || currentData.poster_url, (currentData as any).source);
   }, [currentData]);
 
+  // TV box yếu: dùng w780 thay /original để nhẹ decode/GPU.
+  const tvImgSize = isTv ? '/w780' : '/original';
   const detailBackdropSrc = useMemo(() => {
     if (!currentData) return '';
     if (loadedTmdbSrc) return loadedTmdbSrc;
@@ -359,25 +388,25 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
 
     const primary = currentData.backdrops?.find((b) => b.primary)?.url;
     if (primary && primary.includes('image.tmdb.org')) {
-      return primary.includes('/original') ? primary : primary.replace(/\/w\d+/, '/original');
+      return primary.includes('/original') ? primary.replace('/original', tvImgSize) : primary.replace(/\/w\d+/, tvImgSize);
     }
     if (currentData.backdrop_url && currentData.backdrop_url.includes('image.tmdb.org')) {
-      return currentData.backdrop_url.includes('/original') ? currentData.backdrop_url : currentData.backdrop_url.replace(/\/w\d+/, '/original');
+      return currentData.backdrop_url.includes('/original') ? currentData.backdrop_url.replace('/original', tvImgSize) : currentData.backdrop_url.replace(/\/w\d+/, tvImgSize);
     }
 
     const moviePrimary = movie?.backdrops?.find((b) => b.primary)?.url;
     if (moviePrimary && moviePrimary.includes('image.tmdb.org')) {
-      return moviePrimary.includes('/original') ? moviePrimary : moviePrimary.replace(/\/w\d+/, '/original');
+      return moviePrimary.includes('/original') ? moviePrimary.replace('/original', tvImgSize) : moviePrimary.replace(/\/w\d+/, tvImgSize);
     }
     if (movie?.backdrop_url && movie.backdrop_url.includes('image.tmdb.org')) {
-      return movie.backdrop_url.includes('/original') ? movie.backdrop_url : movie.backdrop_url.replace(/\/w\d+/, '/original');
+      return movie.backdrop_url.includes('/original') ? movie.backdrop_url.replace('/original', tvImgSize) : movie.backdrop_url.replace(/\/w\d+/, tvImgSize);
     }
 
     if (primary) return primary;
     if (currentData.backdrop_url) return currentData.backdrop_url;
 
     return fallbackThumbSrc;
-  }, [currentData, loadedTmdbSrc, tmdbBackdrop, fallbackThumbSrc, movie]);
+  }, [currentData, loadedTmdbSrc, tmdbBackdrop, fallbackThumbSrc, movie, tvImgSize]);
 
   const isShowingTmdb = Boolean(detailBackdropSrc && detailBackdropSrc !== fallbackThumbSrc && detailBackdropSrc.includes('image.tmdb.org'));
 
@@ -701,59 +730,73 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
     return () => window.clearTimeout(t);
   }, [isTv, isLoading, movie?.slug]);
 
-  if (!movie || !currentData) return null;
-
-  // TV remote: mở trang chi tiết là focus ngay nút "Xem Phim Ngay" ĐANG HIỆN
-  // (có 3 nút desktop/mobile, chỉ 1 hiện tùy màn hình) để D-pad đi được liền.
-  // Poll ngắn vì dữ liệu chi tiết về sau mới render xong nút.
+  // TV remote: mở trang chi tiết là focus ngay nút "Xem Phim Ngay".
+  // Hero render ngay từ mount (currentData = full || movie prop) nên KHÔNG chờ
+  // isLoading (loading còn đợi related + lịch TMDB, TV chậm vài giây无 focus).
+  // State-driven, rAF-chain ngắn (không poll interval). Chỉ ĐƯA focus vào khi
+  // focus còn ở ngoài modal — bao giờ cũng không giật focus của user.
+  // Đặt TRƯỚC early-return để đúng rules-of-hooks.
   useEffect(() => {
-    let isTv = false;
-    try {
-      isTv = document.documentElement.classList.contains('tv-mode');
-    } catch {}
-    if (!isTv) return;
-    const isVisible = (el: HTMLElement): boolean => {
+    if (!isTv || !movie) return;
+    let cancelled = false;
+    let frames = 0;
+    const MAX_FRAMES = 10;
+    const target_of = (root: HTMLElement): HTMLElement | null =>
+      root.querySelector<HTMLElement>('[data-tv-autofocus]') ||
+      root.querySelector<HTMLElement>('[data-tv-detail-play]');
+    const tryFocus = () => {
+      if (cancelled) return;
       try {
-        const r = el.getBoundingClientRect();
-        if (r.width <= 4 || r.height <= 4) return false;
-        const st = window.getComputedStyle(el);
-        return st.display !== 'none' && st.visibility !== 'hidden';
-      } catch {
-        return false;
-      }
-    };
-    let tries = 0;
-    const timer = window.setInterval(() => {
-      try {
-        tries += 1;
-        const btns = Array.from(
-          document.querySelectorAll<HTMLElement>('#movie-detail-fullpage [data-tv-detail-play]'),
-        );
-        const target = btns.find(isVisible);
-        if (target) {
+        const root = document.getElementById('movie-detail-fullpage');
+        if (!root) {
+          if (frames < MAX_FRAMES) { frames += 1; requestAnimationFrame(tryFocus); }
+          return;
+        }
+        // User đã tự đi vào trong modal (D-pad nhanh tay) -> dừng, không giật.
+        const ae = document.activeElement as HTMLElement | null;
+        if (ae && ae !== document.body && ae !== target_of(root) && root.contains(ae)) return;
+        const target = target_of(root);
+        if (!target) {
+          if (frames < MAX_FRAMES) { frames += 1; requestAnimationFrame(tryFocus); }
+          return;
+        }
+        const r = target.getBoundingClientRect();
+        if (r.width <= 4 || r.height <= 4) {
+          if (frames < MAX_FRAMES) { frames += 1; requestAnimationFrame(tryFocus); }
+          return;
+        }
+        if (document.activeElement !== target) {
           try { markProgrammaticFocus(); } catch {}
           try {
             target.focus({ preventScroll: true } as FocusOptions);
           } catch {
             target.focus();
           }
-          // WebView TV thường bỏ qua preventScroll và tự cuộn theo focus,
-          // kéo hero trượt lên làm mất tên phim ở top -> pin lại về đỉnh.
-          try {
-            containerRef.current?.scrollTo({ top: 0 });
-          } catch {
-            try {
-              if (containerRef.current) containerRef.current.scrollTop = 0;
-            } catch {}
-          }
-          window.clearInterval(timer);
-        } else if (tries >= 12) {
-          window.clearInterval(timer);
         }
-      } catch {}
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [movie?.slug, isLoading]);
+        // WebView TV thường bỏ qua preventScroll và tự cuộn theo focus,
+        // kéo hero trượt lên làm mất tên phim ở top -> pin lại về đỉnh.
+        try {
+          containerRef.current?.scrollTo({ top: 0 });
+        } catch {
+          try {
+            if (containerRef.current) containerRef.current.scrollTop = 0;
+          } catch {}
+        }
+        // Giữ 2 frame xác nhận (WebView hay rớt focus lúc decode ảnh), rồi dừng.
+        if (document.activeElement === target && frames >= 2) return;
+        if (frames < MAX_FRAMES) { frames += 1; requestAnimationFrame(tryFocus); }
+      } catch {
+        if (frames < MAX_FRAMES) { frames += 1; requestAnimationFrame(tryFocus); }
+      }
+    };
+    const raf = requestAnimationFrame(tryFocus);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(raf);
+    };
+  }, [isTv, movie?.slug]);
+
+  if (!movie || !currentData) return null;
 
   return (
     <motion.div
@@ -762,10 +805,13 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
         role="dialog"
         aria-modal="true"
         aria-label={currentData?.name || movie?.name || 'Chi tiết phim'}
-        initial={{ opacity: 0, scale: 0.90, y: 28 }}
+        initial={isTv ? { opacity: 0 } : { opacity: 0, scale: 0.90, y: 28 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
-        exit={{ opacity: 0, scale: 0.86, y: 32 }}
-        transition={{
+        exit={isTv ? { opacity: 0 } : { opacity: 0, scale: 0.86, y: 32 }}
+        transition={isTv ? {
+          duration: 0.15,
+          ease: 'easeOut',
+        } : {
           type: "spring",
           stiffness: 300,
           damping: 30,
@@ -787,17 +833,21 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
         </button>
         )}
 
-        {/* Loading overlay - minimalist luxurious, mờ sâu */}
+        {/* Loading overlay - minimalist luxurious, mờ sâu.
+            Mở từ tap: shell DOM ngoài của App che rồi nên bỏ overlay riêng
+            để chỉ có ĐÚNG 1 loading. */}
         <AnimatePresence>
-          {isLoading && (
+          {isLoading && !isExternalLoading && (
             <motion.div
               id="detail-loading-overlay"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.35, ease: 'easeOut' }}
-              className="absolute inset-0 z-40 flex items-center justify-center pointer-events-auto"
-              style={{
+              className={`absolute inset-0 z-40 flex items-center justify-center ${isTv ? 'pointer-events-none' : 'pointer-events-auto'}`}
+              style={isTv ? {
+                background: 'rgba(6,10,20,0.88)',
+              } : {
                 background: 'radial-gradient(ellipse at center, rgba(12,20,39,0.55) 0%, rgba(6,10,20,0.72) 55%, rgba(2,4,10,0.88) 100%)',
                 backdropFilter: 'blur(28px) saturate(1.25)',
                 WebkitBackdropFilter: 'blur(28px) saturate(1.25)',

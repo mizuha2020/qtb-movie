@@ -69,6 +69,61 @@ export function useTvRemoteNav() {
     };
   }, []);
 
+  // Prefetch debounce: focus giữ yên 200ms trên card mới gọi detail (tránh
+  // spam API khi lia D-pad 1→2→3→4→5). + preload chunk detail/player lúc idle
+  // để lần mở đầu không vừa tải chunk vừa fetch API vừa decode ảnh.
+  useEffect(() => {
+    let timer = 0;
+    let lastSlug = '';
+    let chunksPreloaded = false;
+    const preloadChunks = () => {
+      if (chunksPreloaded) return;
+      chunksPreloaded = true;
+      try {
+        import('../components/MovieDetailModal').catch(() => {});
+        import('../components/GauPlayer').catch(() => {});
+      } catch {}
+    };
+    try {
+      const idle = (window as any).requestIdleCallback as
+        | ((cb: () => void, opts?: any) => number)
+        | undefined;
+      if (typeof idle === 'function') idle(() => preloadChunks(), { timeout: 4000 });
+      else window.setTimeout(preloadChunks, 2500);
+    } catch {
+      try { window.setTimeout(preloadChunks, 2500); } catch {}
+    }
+    const onFocusIn = (e: FocusEvent) => {
+      try {
+        if (!isTvModeActive()) return;
+        preloadChunks();
+        const t = e.target as HTMLElement | null;
+        const card = t?.closest?.('[data-tv-card]') as HTMLElement | null;
+        const slug = card?.getAttribute?.('data-tv-card') || '';
+        if (!slug || slug === lastSlug) return;
+        lastSlug = slug;
+        if (timer) window.clearTimeout(timer);
+        const current = slug;
+        timer = window.setTimeout(() => {
+          // Vẫn đang đứng yên trên card đó mới fetch (debounce)
+          try {
+            const ae = document.activeElement as HTMLElement | null;
+            const still = ae?.closest?.('[data-tv-card]')?.getAttribute?.('data-tv-card');
+            if (still !== current) return;
+            import('../services/movieApi').then((m) => {
+              try { m.movieApi.getMovieDetail(current).catch(() => {}); } catch {}
+            }).catch(() => {});
+          } catch {}
+        }, 200);
+      } catch {}
+    };
+    window.addEventListener('focusin', onFocusIn);
+    return () => {
+      window.removeEventListener('focusin', onFocusIn);
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
+
   // Khi bật tv-mode mà chưa có focus (mở app bằng remote) -> tự focus nút chính
   useEffect(() => {
     let t: number | null = null;

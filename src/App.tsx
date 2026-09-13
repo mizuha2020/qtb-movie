@@ -1,4 +1,4 @@
-import React, { Suspense, useEffect, useState, useCallback, useRef, useMemo } from "react";
+import React, { Suspense, useEffect, useState, useCallback, useRef, useMemo, startTransition } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import {
   Account,
@@ -13,7 +13,7 @@ import {
 } from "./types";
 import { authService } from "./services/authService";
 import { firestoreStorage } from "./services/firestoreStorage";
-import { movieApi } from "./services/movieApi";
+import { movieApi, getImageUrl } from "./services/movieApi";
 import { presenceService } from "./services/presenceService";
 import { appConfigService } from "./services/appConfigService";
 import { verifyBackendUrl } from "./services/apiConfig";
@@ -64,6 +64,7 @@ import {
 import { FollowedRow } from "./components/FollowedRow";
 import { Capacitor } from "@capacitor/core";
 import { applyTvClass } from "./utils/tvDetect";
+import { markProgrammaticFocus } from "./utils/tvRemote";
 import { useTvRemoteNav } from "./hooks/useTvRemote";
 import { useTvMode } from "./hooks/useTvMode";
 import { App as CapApp } from "@capacitor/app";
@@ -113,15 +114,235 @@ function isHomeAtTop(): boolean {
   }
 }
 
-/** Cuộn mượt về đầu trang (dùng cho Back khi chưa ở top của trang chủ). */
+/** Về đầu trang (dùng cho Back khi chưa ở top của trang chủ).
+ *  TV: instant + reset focus lên neo trên cùng (deterministic, không smooth).
+ *  Giữ smooth cho non-TV để không đổi UX mobile/desktop. */
 function scrollToHomeTop(): void {
   try {
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    const isTv = document.documentElement.classList.contains("tv-mode");
+    if (isTv) {
+      window.scrollTo(0, 0);
+      resetHomeFocusToTop();
+    } else {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   } catch {
     try {
       window.scrollTo(0, 0);
     } catch {}
   }
+}
+
+/**
+ * Reset focus lên đầu trang home sau khi Back-về-top.
+ * Không làm gì trên non-TV. Thứ tự ưu tiên: hero play -> card đầu hàng 1 ->
+ * logo navbar -> phần tử focusable đầu tiên.
+ */
+function resetHomeFocusToTop(): void {
+  try {
+    if (!document.documentElement.classList.contains("tv-mode")) return;
+    const pick = (): HTMLElement | null => {
+      const sels = [
+        "#hero-play-btn",
+        "[data-tv-autofocus]",
+        "#brand-logo-btn",
+      ];
+      for (const s of sels) {
+        try {
+          const el = document.querySelector<HTMLElement>(s);
+          if (!el) continue;
+          const r = el.getBoundingClientRect();
+          if (r.width > 4 && r.height > 4) return el;
+        } catch {}
+      }
+      try {
+        const card = document.querySelector<HTMLElement>("[data-tv-card]");
+        if (card) {
+          const r = card.getBoundingClientRect();
+          if (r.width > 4 && r.height > 4) return card;
+        }
+      } catch {}
+      return null;
+    };
+    // Instant scroll đã đồng bộ, nhưng WebView cần 1 frame để layout ổn định
+    // mới đo rect/focus chính xác.
+    requestAnimationFrame(() => {
+      try {
+        const target = pick();
+        if (!target) return;
+        try {
+          markProgrammaticFocus();
+        } catch {}
+        try {
+          target.focus({ preventScroll: true } as FocusOptions);
+        } catch {
+          target.focus();
+        }
+      } catch {}
+    });
+  } catch {}
+}
+
+/**
+ * Shell mở-ngay khi bấm card: hiện TỨC THÌ cùng frame với cú bấm (dùng data đã
+ * có sẵn từ hàng phim), che khoảng trống 1-2s chờ lazy-chunk + API detail.
+ * Nhẹ tuyệt đối: không motion, không blur đắt — chỉ ảnh mờ + spinner CSS.
+ */
+function DetailOpeningShell({ movie }: { movie: Movie }) {
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex flex-col items-center justify-center overflow-hidden"
+      style={{
+        background:
+          "radial-gradient(ellipse at center, rgba(12,20,39,0.55) 0%, rgba(6,10,20,0.72) 55%, rgba(2,4,10,0.88) 100%)",
+      }}
+      aria-label="Đang tải thông tin phim"
+    >
+      <div className="absolute w-64 h-64 bg-sky-400/10 blur-[50px] rounded-full pointer-events-none" />
+      <div className="relative flex flex-col items-center px-6 text-center">
+        <div className="relative w-14 h-14 flex items-center justify-center">
+          <div className="absolute inset-0 rounded-full border border-white/[0.07]" />
+          <div
+            className="absolute inset-0 rounded-full border border-t-white/90 border-r-white/15 border-b-white/5 border-l-white/15 animate-spin"
+            style={{ animationDuration: "1.2s" }}
+          />
+          <div className="w-[3px] h-[3px] rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.9),0_0_22px_rgba(125,211,252,0.5)]" />
+        </div>
+        <p className="mt-7 text-[10px] tracking-[0.42em] font-light text-white/85 uppercase">
+          Đang tải
+        </p>
+        <div className="flex items-center gap-1.5 mt-3">
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className="w-1 h-1 rounded-full bg-white/90 animate-pulse"
+              style={{ animationDelay: `${i * 0.2}s`, animationDuration: "1.4s" }}
+            />
+          ))}
+        </div>
+        <p className="mt-3 text-[11px] font-light tracking-wide text-white/30 max-w-[220px] truncate text-center">
+          {movie.name || "Gấu Cinema"}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Shell DOM thuần (ngoài React): hiện trong cùng task của cú bấm, paint sau
+ * 2 frame — kể cả khi React reconcile cả cây App mất 1-2s trên box yếu.
+ * Dùng đúng 1 loading duy nhất từ tap tới khi detail sẵn sàng.
+ */
+let instantShellEl: HTMLElement | null = null;
+let instantShellTimer = 0;
+let instantShellOwner = "";
+function showInstantDetailShell(
+  name: string,
+  owner?: string,
+  labelText?: string,
+) {
+  try {
+    hideInstantDetailShell();
+    if (!document.body) return;
+    if (!document.getElementById("gau-spin-keyframes")) {
+      const st = document.createElement("style");
+      st.id = "gau-spin-keyframes";
+      st.textContent =
+        "@keyframes gau-spin{to{transform:rotate(360deg)}}" +
+        "@keyframes gau-dot{0%,100%{opacity:0.3;transform:scale(0.8)}50%{opacity:1;transform:scale(1)}}";
+      document.head.appendChild(st);
+    }
+    // Skin = loading cũ của modal (radial + hairline spinner + ĐANG TẢI),
+    // chỉ đổi cách hiện (DOM tức thì), không đổi hành vi.
+    const el = document.createElement("div");
+    el.id = "instant-detail-shell";
+    el.setAttribute("role", "status");
+    el.setAttribute("aria-label", "Đang tải thông tin phim");
+    el.style.cssText =
+      "position:fixed;inset:0;z-index:100;" +
+      "background:radial-gradient(ellipse at center, rgba(12,20,39,0.55) 0%, rgba(6,10,20,0.72) 55%, rgba(2,4,10,0.88) 100%);" +
+      "display:flex;flex-direction:column;align-items:center;justify-content:center;" +
+      "padding:0 24px;text-align:center;";
+    const glow = document.createElement("div");
+    glow.style.cssText =
+      "position:absolute;width:256px;height:256px;border-radius:9999px;" +
+      "background:rgba(56,189,248,0.1);filter:blur(50px);pointer-events:none;";
+    const spinnerWrap = document.createElement("div");
+    spinnerWrap.style.cssText =
+      "position:relative;width:56px;height:56px;" +
+      "display:flex;align-items:center;justify-content:center;";
+    const ring = document.createElement("div");
+    ring.style.cssText =
+      "position:absolute;inset:0;border-radius:9999px;" +
+      "border:1px solid rgba(255,255,255,0.07);";
+    const arc = document.createElement("div");
+    arc.style.cssText =
+      "position:absolute;inset:0;border-radius:9999px;" +
+      "border:1px solid rgba(255,255,255,0.15);" +
+      "border-top-color:rgba(255,255,255,0.9);border-right-color:rgba(255,255,255,0.15);" +
+      "animation:gau-spin 1.2s linear infinite;";
+    const dot = document.createElement("div");
+    dot.style.cssText =
+      "width:3px;height:3px;border-radius:9999px;background:#fff;" +
+      "box-shadow:0 0 10px rgba(255,255,255,0.9),0 0 22px rgba(125,211,252,0.5);";
+    spinnerWrap.appendChild(ring);
+    spinnerWrap.appendChild(arc);
+    spinnerWrap.appendChild(dot);
+    const label = document.createElement("p");
+    label.style.cssText =
+      "color:rgba(255,255,255,0.85);font-size:10px;font-weight:300;" +
+      "letter-spacing:0.42em;text-transform:uppercase;margin:28px 0 0;text-indent:0.42em;";
+    label.textContent = labelText || "Đang tải";
+    const dots = document.createElement("div");
+    dots.style.cssText =
+      "display:flex;align-items:center;gap:6px;margin-top:12px;";
+    for (let i = 0; i < 3; i++) {
+      const d = document.createElement("span");
+      d.style.cssText =
+        "width:4px;height:4px;border-radius:9999px;background:rgba(255,255,255,0.9);" +
+        `animation:gau-dot 1.4s ease-in-out infinite;animation-delay:${i * 0.2}s;`;
+      dots.appendChild(d);
+    }
+    const title = document.createElement("p");
+    title.style.cssText =
+      "color:rgba(255,255,255,0.3);font-size:11px;font-weight:300;margin:12px 0 0;" +
+      "max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;";
+    title.textContent = name || "Gấu Cinema";
+    el.appendChild(glow);
+    el.appendChild(spinnerWrap);
+    el.appendChild(label);
+    el.appendChild(dots);
+    el.appendChild(title);
+    document.body.appendChild(el);
+    instantShellEl = el;
+    instantShellOwner = owner || "";
+    // Lưới an toàn: không bao giờ kẹt quá 10s.
+    instantShellTimer = window.setTimeout(() => hideInstantDetailShell(), 10000);
+  } catch {}
+}
+/**
+ * Gỡ shell. Có owner: chỉ gỡ khi đúng chủ (unmount phim A không được gỡ
+ * shell của phim B khi bấm related liên tục). Không owner: gỡ luôn.
+ */
+function hideInstantDetailShell(owner?: string) {
+  try {
+    if (owner && instantShellOwner && instantShellOwner !== owner) return;
+    instantShellOwner = "";
+    if (instantShellTimer) {
+      window.clearTimeout(instantShellTimer);
+      instantShellTimer = 0;
+    }
+    if (instantShellEl) {
+      try {
+        instantShellEl.remove();
+      } catch {}
+      instantShellEl = null;
+    } else {
+      try {
+        document.getElementById("instant-detail-shell")?.remove();
+      } catch {}
+    }
+  } catch {}
 }
 
 export default function App() {
@@ -419,6 +640,69 @@ export default function App() {
   }
   // Chống resolve deep-link cũ đè resolve mới khi fetch chồng nhau
   const routeReqRef = useRef(0);
+  // Card đã mở detail/player (để đóng thì trả focus về đúng chỗ, không tuột lên top).
+  // Home vẫn mount bên dưới overlay nên node còn nguyên.
+  const overlayOpenerRef = useRef<HTMLElement | null>(null);
+  const overlayOpenerSlugRef = useRef<string | null>(null);
+
+  /** Focus đồng bộ về opener (dùng ngay trong pha 1 để D-pad ăn liền). */
+  const focusOpenerSync = useCallback(() => {
+    try {
+      let el = overlayOpenerRef.current;
+      if (!el || !el.isConnected) {
+        const slug = overlayOpenerSlugRef.current;
+        el =
+          (slug &&
+            document.querySelector<HTMLElement>(
+              `[data-tv-card="${slug}"]`,
+            )) ||
+          null;
+        if (el) overlayOpenerRef.current = el;
+      }
+      if (el && el.isConnected) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 4 && r.height > 4) {
+          markProgrammaticFocus();
+          try {
+            el.focus({ preventScroll: true } as FocusOptions);
+          } catch {
+            el.focus();
+          }
+          return true;
+        }
+      }
+    } catch {}
+    return false;
+  }, []);
+  // Mốc thời gian vừa đóng overlay (chặn handler popstate legacy chạy ké
+  // scrollToHomeTop sau appGoBack; tự hết hạn sau 1.5s nên không kẹt).
+  const overlayCloseTsRef = useRef(0);
+
+  /** Trả focus về card gốc sau khi đóng overlay (preventScroll: giữ nguyên view).
+   *  Chạy trước timer ensureTvFocus 350ms nên không bị giật lên đầu trang. */
+  const restoreOpenerFocus = useCallback(() => {
+    try {
+      const el = overlayOpenerRef.current;
+      if (el && el.isConnected) {
+        const r = el.getBoundingClientRect();
+        if (r.width > 4 && r.height > 4) {
+          requestAnimationFrame(() => {
+            try {
+              if (!el.isConnected) return;
+              markProgrammaticFocus();
+              try {
+                el.focus({ preventScroll: true } as FocusOptions);
+              } catch {
+                el.focus();
+              }
+            } catch {}
+          });
+          return;
+        }
+      }
+      overlayOpenerRef.current = null;
+    } catch {}
+  }, []);
   // Ref trỏ tới các handler điều hướng (effect back-button khai báo trước handler nên gọi qua ref để tránh TDZ)
   const navActionsRef = useRef<{
     closePlayer: () => void;
@@ -1058,9 +1342,25 @@ export default function App() {
   // overlay cùng-URL (profiles).
   useEffect(() => {
     const handlePopState = (e: PopStateEvent) => {
+      // Back (trình duyệt) trong lúc đang pending mở detail (shell DOM hiện,
+      // navigate còn defer): hủy mở, ở yên trang hiện tại thay vì thoát app.
+      try {
+        if (document.getElementById("instant-detail-shell")) {
+          openReqRef.current++;
+          detailExternalRef.current = false;
+          hideInstantDetailShell();
+          return;
+        }
+      } catch {}
       if (showProfileSelector && currentAccount && activeProfile) {
         setShowProfileSelector(false);
       } else if (!e.state) {
+        // Vừa đóng overlay (detail/player tự gọi appGoBack): popstate này chỉ
+        // hội tụ URL, cấm chạy ké scrollToHomeTop (view + focus đã giữ).
+        if (Date.now() - overlayCloseTsRef.current < 1500) {
+          overlayCloseTsRef.current = 0;
+          return;
+        }
         // Don't show exit when in livetv app
         if (activeApp !== "cinema") {
           return;
@@ -1097,6 +1397,16 @@ export default function App() {
       if (activeApp !== "cinema") {
         return;
       }
+      // Đang pending mở detail (shell DOM hiện, modal chưa mount, state còn
+      // null): hủy mở, ở yên — không rơi xuống các nhánh home/exit bên dưới.
+      try {
+        if (document.getElementById("instant-detail-shell")) {
+          openReqRef.current++;
+          detailExternalRef.current = false;
+          hideInstantDetailShell();
+          return;
+        }
+      } catch {}
       if (showExitConfirmModal) {
         setShowExitConfirmModal(false);
       } else if (showLogoutConfirm) {
@@ -1196,7 +1506,25 @@ export default function App() {
     setShowProfileSelector(true);
   };
 
+  const openReqRef = useRef(0);
+  // Modal mở từ tap (vs deep-link): dùng shell DOM ngoài tới khi sẵn sàng,
+  // modal bỏ overlay riêng để chỉ có ĐÚNG 1 loading.
+  const detailExternalRef = useRef(false);
+
   const openDetailModal = (movie: Movie) => {
+    // Nhớ card đang focus để đóng thì trả focus về đúng chỗ (Netflix-like).
+    try {
+      const ae = document.activeElement as HTMLElement | null;
+      const card = ae?.closest?.("[data-tv-card]") as HTMLElement | null;
+      if (card) {
+        overlayOpenerRef.current = card;
+        overlayOpenerSlugRef.current =
+          card.getAttribute("data-tv-card") || movie.slug;
+      } else {
+        if (ae && ae !== document.body) overlayOpenerRef.current = ae;
+        overlayOpenerSlugRef.current = movie.slug;
+      }
+    } catch {}
     if (!selectedMovieForDetail) {
       // Nhớ chỗ đang đứng để nút Đóng/X quay về (đi trong app); deep-link vào thẳng thì ref đã là tab
       detailReturnRef.current =
@@ -1204,24 +1532,136 @@ export default function App() {
     }
     // Mở trong app = push entry mới -> nút Đóng đi lùi (-1) đúng thứ tự
     deepLinkEntryRef.current = false;
-    setSelectedMovieForDetail(movie);
-    appNavigate(buildPhimUrl(movie.slug));
+    // Pha 1 (đồng bộ, ngoài React): shell DOM paint sau ~2 frame — user thấy
+    // phản hồi tức thì kể cả khi React reconcile mất 1-2s trên box yếu.
+    detailExternalRef.current = true;
+    showInstantDetailShell(movie.name, movie.slug);
+    // Pha 2: nhường paint xong mới làm việc nặng (transition: chunk + render
+    // modal + navigate chạy nền). URL đổi cùng lúc modal sẵn sàng.
+    const req = ++openReqRef.current;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        if (openReqRef.current !== req) return; // đã bị hủy (Back ngay sau tap)
+        startTransition(() => {
+          if (openReqRef.current !== req) return;
+          setSelectedMovieForDetail(movie);
+          appNavigate(buildPhimUrl(movie.slug));
+        });
+      }),
+    );
   };
 
+  // Modal báo sẵn sàng (loading xong / lỗi / unmount) -> gỡ shell DOM.
+  const handleDetailReady = useCallback((slug?: string) => {
+    try {
+      hideInstantDetailShell(slug);
+    } catch {}
+  }, []);
+
+  // Guard đồng bộ chống double-close cùng tick (Esc đi qua cả global
+  // back-flow lẫn listener riêng của modal; state chưa kịp cập nhật).
+  const detailClosingRef = useRef(false);
+
   const closeDetailModal = () => {
-    if (!selectedMovieForDetail) return; // đã đóng rồi (tránh lùi 2 entry)
-    const r = parseLocation(window.location.pathname, window.location.search);
-    setSelectedMovieForDetail(null);
-    if (r.kind !== "detail") return; // không ở URL detail thì chỉ clear state (tránh yank URL lạ)
-    if (deepLinkEntryRef.current) {
-      // Deep-link/reload: không có entry trước của app -> về URL dự phòng
-      deepLinkEntryRef.current = false;
-      appNavigate(detailReturnRef.current || "/", { replace: true });
-      return;
+    if (detailClosingRef.current) return;
+    // Đang pending mở (shell hiện, modal chưa mount) mà Back -> hủy mở luôn.
+    if (!selectedMovieForDetail) {
+      openReqRef.current++;
+      detailExternalRef.current = false;
+      hideInstantDetailShell();
+      return; // đã đóng rồi (tránh lùi 2 entry)
     }
-    // Đi trong app: lùi 1 entry để đúng thứ tự mở (player/detail trước đó tự hiện lại qua route)
-    appGoBack();
+    detailExternalRef.current = false;
+    hideInstantDetailShell();
+    detailClosingRef.current = true;
+    // Pha 1 (đồng bộ, ngoài React): giấu modal + dựng loading che nhịp
+    // commit nặng phía sau — user thấy phản hồi liền thay vì khựng.
+    try {
+      document
+        .getElementById("movie-detail-fullpage")
+        ?.style.setProperty("display", "none");
+    } catch {}
+    showInstantDetailShell("Gấu Cinema", undefined, "Đang tải trang chủ");
+    focusOpenerSync();
+    // Pha 2: nhường paint xong mới clear state + navigate, bọc transition để
+    // React render nền (interruptible) — input vẫn sống trong lúc commit.
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        startTransition(() => {
+          const r = parseLocation(
+            window.location.pathname,
+            window.location.search,
+          );
+          setSelectedMovieForDetail(null);
+          // Đánh dấu vừa đóng overlay: popstate kế tiếp (từ appGoBack) không được
+          // chạy ké scrollToHomeTop; view giữ nguyên.
+          overlayCloseTsRef.current = Date.now();
+          if (r.kind !== "detail") return; // không ở URL detail thì chỉ clear state (tránh yank URL lạ)
+          if (deepLinkEntryRef.current) {
+            // Deep-link/reload: không có entry trước của app -> về URL dự phòng
+            deepLinkEntryRef.current = false;
+            appNavigate(detailReturnRef.current || "/", { replace: true });
+            return;
+          }
+          // Đi trong app: lùi 1 entry để đúng thứ tự mở (player/detail trước đó tự hiện lại qua route)
+          appGoBack();
+        });
+      }),
+    );
   };
+
+  // Mở khóa double-close khi modal đã đóng xong (commit null).
+  useEffect(() => {
+    if (!selectedMovieForDetail) detailClosingRef.current = false;
+  }, [selectedMovieForDetail]);
+
+  // Lưới an toàn sau commit đóng modal: commit thay node làm rớt focus
+  // (về body) -> dựng lại theo slug card gốc. Focus còn nguyên thì không đụng.
+  // Đồng thời gỡ loading-back sau khi đã paint (2 frame).
+  useEffect(() => {
+    if (selectedMovieForDetail) return;
+    let raf1 = 0;
+    let raf2 = 0;
+    // Focus rớt (về body) sau commit -> dựng lại theo slug; còn nguyên thì thôi.
+    try {
+      const ae = document.activeElement as HTMLElement | null;
+      if (
+        (!ae || ae === document.body) &&
+        document.documentElement.classList.contains("tv-mode")
+      ) {
+        focusOpenerSync();
+      }
+    } catch {}
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        try {
+          hideInstantDetailShell();
+        } catch {}
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [selectedMovieForDetail, focusOpenerSync]);
+
+  // Gỡ loading-back của player sau commit + paint.
+  useEffect(() => {
+    if (playingMovie) return;
+    let raf1 = 0;
+    let raf2 = 0;
+    raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        try {
+          hideInstantDetailShell();
+        } catch {}
+      });
+    });
+    return () => {
+      cancelAnimationFrame(raf1);
+      cancelAnimationFrame(raf2);
+    };
+  }, [playingMovie]);
 
   // Shell mở player ngay kiểu Netflix: tập/server giả trong lúc chờ source nền.
   // Route /watch/:slug (không tập) sẽ kích applyLocationRoute tự resolve tập thật.
@@ -1340,21 +1780,63 @@ export default function App() {
 
   const closePlayer = () => {
     if (!playingMovieRef.current) return; // đã đóng rồi (tránh lùi 2 entry)
+    try {
+      hideInstantDetailShell();
+    } catch {}
     const r = parseLocation(window.location.pathname, window.location.search);
     saveFinalProgress();
-    setPlayingMovie(null);
     playingMovieRef.current = null;
-    // Hủy các lần resolve route đang bay (tránh fetch về sau mở lại player đã đóng)
-    routeReqRef.current++;
-    if (r.kind !== "player") return; // không ở URL player thì chỉ clear state
-    if (deepLinkEntryRef.current) {
-      // Deep-link/reload: không có entry trước của app -> về URL dự phòng
-      deepLinkEntryRef.current = false;
-      appNavigate(playerReturnRef.current || "/", { replace: true });
-      return;
+    // Pha 1 (đồng bộ): giấu player + dựng loading che nhịp commit nặng.
+    // Focus trả NGAY (detail còn thì nút Xem, else card gốc).
+    try {
+      document
+        .getElementById("gau-player-root")
+        ?.style.setProperty("display", "none");
+    } catch {}
+    showInstantDetailShell("Gấu Cinema", undefined, "Đang quay lại");
+    try {
+      const detailPlay = document.querySelector<HTMLElement>(
+        "#movie-detail-fullpage [data-tv-autofocus]",
+      );
+      let done = false;
+      if (selectedMovieForDetail && detailPlay) {
+        const dr = detailPlay.getBoundingClientRect();
+        if (dr.width > 4 && dr.height > 4) {
+          markProgrammaticFocus();
+          try {
+            detailPlay.focus({ preventScroll: true } as FocusOptions);
+          } catch {
+            detailPlay.focus();
+          }
+          done = true;
+        }
+      }
+      if (!done) focusOpenerSync();
+    } catch {
+      try {
+        focusOpenerSync();
+      } catch {}
     }
-    // Đi trong app: lùi 1 entry để đúng thứ tự mở (detail trước đó tự hiện lại qua route)
-    appGoBack();
+    // Pha 2: nhường paint rồi mới clear state + navigate (transition nền).
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        startTransition(() => {
+          setPlayingMovie(null);
+          overlayCloseTsRef.current = Date.now();
+          // Hủy các lần resolve route đang bay (tránh fetch về sau mở lại player đã đóng)
+          routeReqRef.current++;
+          if (r.kind !== "player") return; // không ở URL player thì chỉ clear state
+          if (deepLinkEntryRef.current) {
+            // Deep-link/reload: không có entry trước của app -> về URL dự phòng
+            deepLinkEntryRef.current = false;
+            appNavigate(playerReturnRef.current || "/", { replace: true });
+            return;
+          }
+          // Đi trong app: lùi 1 entry để đúng thứ tự mở (detail trước đó tự hiện lại qua route)
+          appGoBack();
+        });
+      }),
+    );
   };
 
   // Đăng ký vào ref cho effect back-button (khai báo trước handler)
@@ -2494,10 +2976,14 @@ export default function App() {
           {selectedMovieForDetail && (
             <Suspense
               key={`detail-${selectedMovieForDetail.slug}`}
-              fallback={null}
+              fallback={
+                <DetailOpeningShell movie={selectedMovieForDetail} />
+              }
             >
               <MovieDetailModal
                 movie={selectedMovieForDetail}
+                externalLoadingRef={detailExternalRef}
+                onReady={handleDetailReady}
                 onClose={closeDetailModal}
                 onPlayMovie={handlePlayMovie}
                 onPlayEpisode={handlePlayEpisode}

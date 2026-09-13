@@ -44,9 +44,7 @@ function isVisible(el: HTMLElement): boolean {
   try {
     // Chỉ đo rect (rẻ, browser batch được). KHÔNG gọi getComputedStyle mỗi phím:
     // style recalc trên hàng trăm nút là nguyên nhân lag D-pad ở home.
-    // Trường hợp opacity-0 còn rect (controls player ẩn...) không lọt vào pool
-    // vì khi player mở, phím do GauPlayer xử lý riêng, không qua đây.
-    const r = el.getBoundingClientRect();
+    const r = cachedRect(el);
     if (r.width <= 4 || r.height <= 4) return false;
     // KHÔNG lọc theo viewport: item dưới fold là target hợp lệ, bấm 1 phát là
     // focus nhảy tới + tvScrollIntoView cuộn theo. (Lọc viewport từng làm DPAD
@@ -57,20 +55,60 @@ function isVisible(el: HTMLElement): boolean {
   }
 }
 
+/** Cache rect theo element, TTL ngắn để bấm dồn không đo lại cả trăm rect.
+ *  Invalidate khi layout đổi (resize/nav/modal/scroll chương trình). */
+const rectCache = new WeakMap<HTMLElement, { r: DOMRect; t: number }>();
+const RECT_TTL_MS = 400;
+let rectCacheVersion = 0;
+export function invalidateTvRectCache(): void {
+  rectCacheVersion += 1;
+}
+function cachedRect(el: HTMLElement): DOMRect {
+  const now = Date.now();
+  try {
+    const hit = rectCache.get(el);
+    if (hit && now - hit.t < RECT_TTL_MS) return hit.r;
+  } catch {}
+  const r = el.getBoundingClientRect();
+  try {
+    rectCache.set(el, { r, t: now });
+  } catch {}
+  return r;
+}
+void rectCacheVersion;
+
+/** Invisible control = không tồn tại trong TV focus graph.
+ *  Kiểm tra rẻ (không getComputedStyle): dựa vào marker DOM显式. */
+export function isTvFocusable(el: HTMLElement): boolean {
+  try {
+    if (el.hasAttribute('data-tv-skip')) return false;
+    if ((el as HTMLButtonElement).disabled) return false;
+    // Bottom-nav mobile không dùng trên TV
+    if (el.closest?.('#mobile-bottom-nav') as Element | null) return false;
+    // Player controls đang ẩn (data-controls=hidden): toàn bộ top/bottom bar vô hình
+    try {
+      const root = el.closest?.('#gau-player-root') as HTMLElement | null;
+      if (root && root.getAttribute('data-controls') === 'hidden') {
+        if (
+          el.closest?.('.tv-player-top, .tv-player-bottom') as Element | null
+        )
+          return false;
+      }
+    } catch {}
+    // Overlay loading resolving che controls chết phía dưới
+    try {
+      if (el.closest?.('[data-tv-hidden-pool]') as Element | null) return false;
+    } catch {}
+    return isVisible(el);
+  } catch {
+    return false;
+  }
+}
+
 export function getFocusable(): HTMLElement[] {
   try {
-    let tvMode = false;
-    try {
-      tvMode = document.documentElement.classList.contains('tv-mode');
-    } catch {}
     return Array.from(document.querySelectorAll<HTMLElement>(FOCUSABLE_SEL)).filter(
-      (el) => {
-        if (el.hasAttribute('data-tv-skip')) return false;
-        // TV không dùng bottom-nav mobile: loại hẳn khỏi pool D-pad
-        // (viewport TV 720p <768px khiến dock hiện dù đang tv-mode).
-        if (tvMode && (el.closest?.('#mobile-bottom-nav') as Element | null)) return false;
-        return isVisible(el);
-      },
+      (el) => isTvFocusable(el),
     );
   } catch {
     return [];
@@ -380,7 +418,7 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
  */
 function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean {
   try {
-    const cr = active.getBoundingClientRect();
+    const cr = cachedRect(active);
     if (!cr || cr.width <= 4 || cr.height <= 4) return false;
     const cx = cr.left + cr.width / 2;
     // Tọa độ dọc theo DOCUMENT (không phụ thuộc vị trí cuộn hiện tại):
@@ -406,7 +444,7 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
     for (const el of cards) {
       let r: DOMRect;
       try {
-        r = el.getBoundingClientRect();
+        r = cachedRect(el);
       } catch {
         continue;
       }
@@ -469,7 +507,7 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
  */
 function focusIntermediateAbove(active: HTMLElement): boolean {
   try {
-    const cr = active.getBoundingClientRect();
+    const cr = cachedRect(active);
     if (!cr || cr.width <= 4 || cr.height <= 4) return false;
     const cx = cr.left + cr.width / 2;
     let pool: HTMLElement[];
@@ -490,7 +528,7 @@ function focusIntermediateAbove(active: HTMLElement): boolean {
     for (const el of pool) {
       let r: DOMRect;
       try {
-        r = el.getBoundingClientRect();
+        r = cachedRect(el);
       } catch {
         continue;
       }
@@ -639,13 +677,13 @@ export function focusNearest(dir: TvDirection): boolean {
       if (dlg) {
         const poolIn = pool.filter((el) => dlg.contains(el));
         if (poolIn.length) {
-          const cr0 = active.getBoundingClientRect();
+          const cr0 = cachedRect(active);
           const c0 = center(cr0);
           let bestD: HTMLElement | null = null;
           let bestScoreD = Infinity;
           for (const el of poolIn) {
             if (el === active) continue;
-            const r = el.getBoundingClientRect();
+            const r = cachedRect(el);
             const p = center(r);
             const dx = p.x - c0.x;
             const dy = p.y - c0.y;
@@ -695,13 +733,13 @@ export function focusNearest(dir: TvDirection): boolean {
         // Hết hàng phía dưới thì fallback generic bình thường.
       }
     }
-    const cr = active.getBoundingClientRect();
+    const cr = cachedRect(active);
     const c = center(cr);
     let best: HTMLElement | null = null;
     let bestScore = Infinity;
     for (const el of pool) {
       if (el === active) continue;
-      const r = el.getBoundingClientRect();
+      const r = cachedRect(el);
       const p = center(r);
       const dx = p.x - c.x;
       const dy = p.y - c.y;

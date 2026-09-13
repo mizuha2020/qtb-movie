@@ -26,7 +26,7 @@ export const TvDetailHero: React.FC<Props> = ({
   // thay vì object-cover ảnh dọc -> tránh crop mất phần top.
   const hasRealBackdrop = Boolean(backdropSrc && fallbackThumb && backdropSrc !== fallbackThumb);
   return (
-    <section id="detail-hero-tv" className="relative w-full shrink-0 bg-[#060a14] select-none flex flex-col justify-center overflow-visible">
+    <section id="detail-hero-tv" data-tv-hero className="relative w-full shrink-0 bg-[#060a14] select-none flex flex-col justify-center overflow-visible">
       <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
         {hasRealBackdrop ? (
           <img
@@ -62,13 +62,13 @@ export const TvDetailHero: React.FC<Props> = ({
         <div className="absolute inset-0 bg-gradient-to-r from-[#060a14] via-[#060a14]/70 to-[#060a14]/5" />
         <div className="absolute inset-0 bg-gradient-to-t from-[#060a14] via-[#060a14]/10 to-transparent" />
       </div>
-      <div className="relative z-10 flex items-start gap-8 px-14 pt-8 pb-8 max-w-[1500px] w-full">
-        <div className="shrink-0 w-[190px] aspect-[2/3] rounded-2xl overflow-hidden shadow-2xl border border-white/15 bg-slate-900">
+      <div className="relative z-10 flex items-start gap-6 px-14 pt-5 pb-5 max-w-[1500px] w-full">
+        <div className="shrink-0 w-[150px] aspect-[2/3] rounded-2xl overflow-hidden shadow-2xl border border-white/15 bg-slate-900">
           <img src={data.poster_url ? getImageUrl(data.poster_url, (data as any).source) : getImageUrl(data.thumb_url, (data as any).source)} alt={data.name} className="w-full h-full object-cover" loading="eager" referrerPolicy="no-referrer" />
         </div>
-        <div className="flex-1 min-w-0 space-y-3 pb-1 overflow-visible">
+        <div className="flex-1 min-w-0 space-y-2 pb-1 overflow-visible">
           <div className="space-y-1 overflow-visible">
-            <h1 className="text-4xl font-black text-white tracking-tight leading-[1.35] line-clamp-2 break-words py-1 drop-shadow-2xl">{data.name}</h1>
+            <h1 className="text-3xl font-black text-white tracking-tight leading-[1.35] line-clamp-2 break-words py-1 drop-shadow-2xl">{data.name}</h1>
             {data.origin_name && <p className="text-lg text-slate-300 font-medium line-clamp-1">{data.origin_name}</p>}
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -82,12 +82,12 @@ export const TvDetailHero: React.FC<Props> = ({
             {data.type && <span className="flex items-center gap-1.5"><Tv className="w-4 h-4 text-slate-400" />{data.type === 'series' ? 'Phim Bộ' : data.type === 'single' ? 'Phim Lẻ' : 'TV Shows'}</span>}
             {cats.length > 0 && <span className="text-slate-400 line-clamp-1">{cats.map((c) => c.name).slice(0, 3).join(', ')}</span>}
           </div>
-          {data.content && <div className="text-sm leading-relaxed text-slate-200/90 line-clamp-3 max-w-[640px]" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(data.content) }} />}
-          <div className="flex items-center gap-3 pt-2">
-            <button data-tv-detail-play data-tv-ep-first-target onClick={onPlay} className="flex items-center gap-2 bg-[#0a84ff] text-white pl-5 pr-7 py-3 rounded-2xl font-extrabold text-base shadow-[0_8px_30px_rgba(10,132,255,0.45)]">
+          {data.content && <div className="text-sm leading-relaxed text-slate-200/90 line-clamp-2 max-w-[640px]" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(data.content) }} />}
+          <div className="flex items-center gap-3 pt-1">
+            <button data-tv-autofocus data-tv-detail-play data-tv-ep-first-target onClick={onPlay} className="flex items-center gap-2 bg-[#0a84ff] text-white pl-5 pr-7 py-3 rounded-2xl font-extrabold text-base shadow-[0_8px_30px_rgba(10,132,255,0.45)]">
               <Play className="w-4 h-4 fill-white" /><span>{resumeLabel ?? 'Xem Phim Ngay'}</span>
             </button>
-            <button ref={saveRef} onClick={onToggleList} className="flex items-center gap-2 bg-white/[0.06] border border-white/15 text-white px-5 py-3 rounded-2xl font-bold text-sm">
+            <button ref={saveRef} data-tv-save onClick={onToggleList} className="flex items-center gap-2 bg-white/[0.06] border border-white/15 text-white px-5 py-3 rounded-2xl font-bold text-sm">
               {isInList ? <><Check className="w-4 h-4 text-sky-300" /><span>Đã lưu</span></> : <><Bookmark className="w-4 h-4 text-sky-300" /><span>Lưu phim</span></>}
             </button>
           </div>

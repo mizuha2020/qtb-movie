@@ -16,7 +16,7 @@ export const TvEpisodeShelf: React.FC<Props> = ({ episodes, posterThumb, source,
   if (!episodes || episodes.length === 0) return null;
   const firstReal = episodes.find((e) => !(e as any).isSoon) || episodes[0];
   return (
-    <section id="detail-episodes-tv" className="px-14 pt-5 pb-12 bg-[#060a14]">
+    <section id="detail-episodes-tv" className="px-14 pt-4 pb-8 bg-[#060a14]">
       <div className="flex items-center justify-between mb-4 max-w-[1500px]">
         <h2 className="flex items-center gap-2.5 text-xl font-extrabold text-white">
           <span className="w-8 h-8 rounded-full border-2 border-sky-500/70 flex items-center justify-center">

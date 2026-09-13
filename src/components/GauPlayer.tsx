@@ -2076,6 +2076,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
               referrerPolicy="no-referrer"
               title={movie.name}
             />
+            {!isTv && (
             <button
               onClick={(e) => { e.stopPropagation(); onBack(); }}
               aria-label="Thoát"
@@ -2084,6 +2085,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             >
               <X className="w-5 h-5 text-white shrink-0" />
             </button>
+            )}
             {currentEpisode.link_m3u8 && (
               <button
                 onClick={(e) => { e.stopPropagation(); setUseEmbed(false); setRetryKey(k => k + 1); }}
@@ -2098,6 +2100,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         <>
         <video
             ref={videoRef}
+            poster={movie.backdrop_url || movie.thumb_url || movie.poster_url || undefined}
             className={`w-full h-full ${fillMode ? 'object-cover' : 'object-contain'}`}
             style={{ filter: screenBrightness < 1 ? `brightness(${screenBrightness})` : undefined, WebkitTouchCallout: 'none' }}
             onContextMenu={e => e.preventDefault()}
@@ -2212,17 +2215,18 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         {/* Shell mở ngay kiểu Netflix: đang chờ source nền thì hiện poster +
             spinner, che controls chết phía dưới; chỉ nút Thoát hoạt động */}
         {isResolvingSource && (
-          <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center overflow-hidden">
+          <div className="absolute inset-0 z-50 bg-black flex flex-col items-center justify-center overflow-hidden" data-tv-hidden-pool>
             {(movie.backdrop_url || movie.thumb_url || movie.poster_url) && (
               <img
                 src={movie.backdrop_url || movie.thumb_url || movie.poster_url}
                 alt=""
                 aria-hidden
                 draggable={false}
-                className="absolute inset-0 w-full h-full object-cover opacity-40"
+                className="absolute inset-0 w-full h-full object-cover scale-110 blur-[14px] opacity-50"
               />
             )}
             <div className="absolute inset-0 bg-gradient-to-t from-black via-black/40 to-black/60" />
+            {!isTv && (
             <button
               onClick={(e) => { e.stopPropagation(); onBack(); }}
               aria-label="Thoát"
@@ -2231,6 +2235,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             >
               <X className="w-5 h-5 sm:w-4 sm:h-4 text-white shrink-0" />
             </button>
+            )}
             <div className="relative z-10 flex flex-col items-center gap-3 px-6 text-center">
               <div className="w-12 h-12 border-[3px] border-white/30 border-t-white rounded-full animate-spin" />
               <p className="text-white text-base font-semibold truncate max-w-[80vw]">{movie.name}</p>
@@ -2342,9 +2347,11 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
               <span className="block text-white/70 text-xs sm:text-[13px] font-medium truncate mt-0.5">{currentEpisode.name}</span>
             </h2>
             <div className="flex items-center gap-2 shrink-0">
+              {!isTv && (
               <button onClick={(e) => { e.stopPropagation(); onBack(); }} aria-label="Thoát" className="shrink-0 rounded-full bg-white/10 active:bg-white/30 hover:bg-white/20 flex items-center justify-center border-0 w-11 h-11 sm:w-8 sm:h-8" style={{ touchAction: 'manipulation' }}>
                 <X className="w-5 h-5 sm:w-4 sm:h-4 text-white shrink-0" />
               </button>
+              )}
             </div>
           </div>
           {/* Mobile: time + server nhanh */}
@@ -2423,6 +2430,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                 style={{ touchAction: 'none' }}
                 role="slider"
                 tabIndex={0}
+                data-tv-timeline
                 aria-label="Thanh tiến trình phim"
                 aria-valuemin={0}
                 aria-valuemax={Math.round(duration || 0)}
