@@ -324,13 +324,14 @@ video::-webkit-media-controls {
   outline-offset: 2px !important;
   box-shadow: none !important;
 }
-/* Card focus NỞ NGANG width thật kiểu Netflix (re-layout, nội dung không méo):
-   - lề trái + height giữ nguyên (card neo trái slot, chỉ lề phải nở),
-   - MovieRow: 160px -> 320px lộ full backdrop (object-cover tự crop lại),
-   - Top10 poster: 128px -> 272px, số rank absolute bên trái giữ nguyên,
-   - đẩy layout có kiểm soát: hàng có spacer cuối + scroll bù chạm-mép trong
-     tvRemote nên item cuối hàng vẫn lộ đủ, không bị cắt.
-   - scaleX bị cấm ở đây: nó phóng cả raster (mặt/chữ bè ngang như bug đã gặp). */
+/* Card focus NO NGANG width that kieu Netflix (re-layout, noi dung khong meo):
+   - le trai + height giu nguyen (card neo trai slot, chi le phai no),
+   - MovieRow: 160px -> 320px lo full backdrop (object-cover tu crop lai),
+   - Top10 poster: 112px -> 272px, so rank absolute ben trai giu nguyen,
+   - HYBRID Netflix-like: card focus no that; cac slot ben PHAI cung hang
+     translateX(+160px) bang GPU (JS dat inline style 1 lan luc focus doi)
+     -> mat thay item phai bi day, nhung khong reflow tung frame.
+   - scaleX bi cam o day: no phong ca raster (mat/chu be ngang nhu bug da gap). */
 .tv-mode .group\/row .tv-row-slot {
   width: 160px;
   transition: none !important;
@@ -393,12 +394,23 @@ video::-webkit-media-controls {
   height: auto;
   aspect-ratio: 2 / 3;
 }
-/* Card TV trong slot nở bị rule global transition:none chặn animation,
-   nên phải re-enable riêng tại đây (đặt SAU rule global để thắng specificity).
-   Animate width thật (không scale) để chữ/mặt không bè ngang. */
+/* Card TV trong slot no bi rule global transition:none chan animation,
+   nen phai re-enable rieng tai day (dat SAU rule global de thang specificity).
+   Hybrid: card focus animate width (1 lan); slot bi day animate transform GPU. */
 .tv-mode .group\/row .tv-row-slot [data-tv-card],
 .tv-mode .tv-top10-slot [data-tv-card] {
   transition: width 0.18s ease-out, outline-color 0.18s ease-out !important;
+}
+/* Slot cung hang duoc day sang phai: chi transform + opacity (GPU, 60fps).
+   TUYET DOI khong transition width/margin/left o day. */
+.tv-mode [data-tv-row] .tv-row-slot,
+.tv-mode [data-tv-row] .tv-top10-slot {
+  transition: transform 0.18s ease-out !important;
+  will-change: transform;
+}
+/* Giam emphasis nhe cho card bi day (cam giac focus Netflix) */
+.tv-mode [data-tv-row][data-tv-expand] .tv-after-focus {
+  opacity: 0.92;
 }
 .tv-mode [data-tv-card] .tv-land {
   transition: opacity 0.18s ease-out !important;

@@ -72,6 +72,92 @@ export function useTvRemoteNav() {
     };
   }, []);
 
+  // Netflix-like hybrid expand: tinh layout 1 LAN luc focus doi, animate = transform.
+  // Card focus no width that (khong scale/meo), cac slot ben PHAI cung hang
+  // translateX(+delta) bang GPU -> mat thay bi day nhung khong reflow tung frame.
+  // Chay DOM-truc tiep (khong setState React) de khong re-render ca row/home.
+  useEffect(() => {
+    const EXPAND_DELTA = 160; // MovieRow 160->320, Top10 poster ~112->272
+    let raf = 0;
+    const clearRow = (row: HTMLElement | null) => {
+      try {
+        if (!row) return;
+        row.removeAttribute('data-tv-expand');
+        const slots = row.querySelectorAll<HTMLElement>('.tv-row-slot, .tv-top10-slot');
+        slots.forEach((s) => {
+          try {
+            s.style.transform = '';
+            s.classList.remove('tv-after-focus');
+          } catch {}
+        });
+      } catch {}
+    };
+    const applyExpand = (card: HTMLElement) => {
+      try {
+        const row = card.closest?.('[data-tv-row]') as HTMLElement | null;
+        if (!row) return;
+        const slot = card.closest?.('.tv-row-slot, .tv-top10-slot') as HTMLElement | null;
+        if (!slot) return;
+        const slots = Array.from(row.querySelectorAll<HTMLElement>('.tv-row-slot, .tv-top10-slot'));
+        const idx = slots.indexOf(slot);
+        if (idx < 0) return;
+        row.setAttribute('data-tv-expand', '1');
+        slots.forEach((s, i) => {
+          try {
+            if (i <= idx) {
+              s.style.transform = '';
+              s.classList.remove('tv-after-focus');
+            } else {
+              s.style.transform = 'translateX(' + EXPAND_DELTA + 'px)';
+              s.classList.add('tv-after-focus');
+            }
+          } catch {}
+        });
+      } catch {}
+    };
+    const onExpFocusIn = (e: FocusEvent) => {
+      try {
+        if (!isTvModeActive()) return;
+        const t = e.target as HTMLElement | null;
+        const card = t?.closest?.('.tv-row-slot [data-tv-card], .tv-top10-slot [data-tv-card]') as HTMLElement | null;
+        const row = (card ?? t)?.closest?.('[data-tv-row]') as HTMLElement | null;
+        try {
+          const rows = Array.from(document.querySelectorAll<HTMLElement>('[data-tv-row]'));
+          for (const r of rows) {
+            if (r !== row && r.hasAttribute('data-tv-expand')) clearRow(r);
+          }
+        } catch {}
+        if (!card || !row) return;
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => applyExpand(card));
+      } catch {}
+    };
+    const onExpFocusOut = (e: FocusEvent) => {
+      try {
+        if (!isTvModeActive()) return;
+        const to = e.relatedTarget as HTMLElement | null;
+        const fromRow = (e.target as HTMLElement | null)?.closest?.('[data-tv-row]') as HTMLElement | null;
+        if (!fromRow) return;
+        const toRow = to?.closest?.('[data-tv-row]') as HTMLElement | null;
+        if (toRow !== fromRow) {
+          cancelAnimationFrame(raf);
+          clearRow(fromRow);
+        }
+      } catch {}
+    };
+    window.addEventListener('focusin', onExpFocusIn);
+    window.addEventListener('focusout', onExpFocusOut);
+    return () => {
+      window.removeEventListener('focusin', onExpFocusIn);
+      window.removeEventListener('focusout', onExpFocusOut);
+      cancelAnimationFrame(raf);
+      try {
+        document.querySelectorAll<HTMLElement>('[data-tv-row][data-tv-expand]').forEach((r) => clearRow(r));
+      } catch {}
+    };
+  }, []);
+
+
   // Prefetch debounce: focus giữ yên 200ms trên card mới gọi detail (tránh
   // spam API khi lia D-pad 1→2→3→4→5). + preload chunk detail/player lúc idle
   // để lần mở đầu không vừa tải chunk vừa fetch API vừa decode ảnh.
