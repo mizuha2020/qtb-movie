@@ -102,6 +102,23 @@ export function useTvRemoteNav() {
         preloadChunks();
         const t = e.target as HTMLElement | null;
         const card = t?.closest?.('[data-tv-card]') as HTMLElement | null;
+        // Card focus nở ngang sang phải (overlay): đánh dấu card kế bên đang bị
+        // đè để hạ z-index (không vẽ đè viền trắng của card focus).
+        // NOTE: card nằm trong slot neo (MovieRow) / slot flex (Top10) nên phải
+        // đi lên 2 cấp: card -> slot -> hàng, rồi tìm slot kế tiếp.
+        try {
+          document.querySelectorAll?.('.tv-under-expand')?.forEach((el) => {
+            if (el !== card) el.classList.remove('tv-under-expand');
+          });
+          if (card) {
+            const slot = card.parentElement as HTMLElement | null;
+            const nextSlot = slot?.nextElementSibling as HTMLElement | null;
+            const victim = nextSlot?.matches?.('[data-tv-card]')
+              ? nextSlot
+              : (nextSlot?.querySelector?.('[data-tv-card]') as HTMLElement | null);
+            if (victim && victim !== card) victim.classList.add('tv-under-expand');
+          }
+        } catch {}
         const slug = card?.getAttribute?.('data-tv-card') || '';
         if (!slug || slug === lastSlug) return;
         lastSlug = slug;

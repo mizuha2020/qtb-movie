@@ -346,6 +346,16 @@ function smoothRowScrollTo(el: HTMLElement, to: number, instant = false) {
 
 export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
   try {
+    // Card TV focus NỞ width thật (không scale): rect đo lúc mới focus chưa gồm
+    // phần nở (transition width 180ms chưa chạy xong / retry đo lệch).
+    // Bù trước PAD px vào mép phải để biết chắc phần nở có chỗ lộ.
+    // MovieRow nở +160px (160->320), Top10 poster nở +144px (128->272) -> lấy 170/150.
+    let expandPad = 0;
+    try {
+      const card = (el.closest?.('[data-tv-card]') as HTMLElement | null) || el;
+      if (card?.closest?.('.tv-top10-slot')) expandPad = 150;
+      else if (card?.closest?.('[data-tv-row]')) expandPad = 170;
+    } catch { expandPad = 0; }
     // Bấm mới hủy retry của lần trước (kẻo cuộn chồng)
     try {
       if (scrollRetryTimer) { window.clearTimeout(scrollRetryTimer); scrollRetryTimer = 0; }
@@ -361,8 +371,14 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
       }
     } catch {}
     const instant = _depth === 0 ? shouldInstantScroll() : false;
-    // Dùng rect cache: focus path vừa đo xong, tránh thêm 1 GBCR đồng bộ mỗi phím
-    const r = cachedRect(el);
+    // Dùng rect tươi cho element vừa focus (bấm Down/Up dồn, trang đang tween
+    // 110ms thì cache 400ms còn giữ vị trí cũ -> tính dy thiếu, scroll không đủ).
+    let r: DOMRect;
+    try {
+      r = el.getBoundingClientRect();
+    } catch {
+      r = cachedRect(el);
+    }
     const vh = window.innerHeight || 800;
     // Dọc: ưu tiên khung scroll trong GẦN NHẤT mà ĐỦ CHỖ chứa dy
     // (trang chi tiết fullpage, modal... cuộn bằng container riêng).
@@ -471,11 +487,14 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
         if (p.scrollWidth > p.clientWidth + 8) {
           const pr = cachedRect(p);
           const EDGE = 12;
+          // Mép phải tính cả phần nở width thật của card focus (rect đo lúc mới
+          // focus chưa gồm transition nên phải bù tay, không thì item cuối bị cắt).
+          const wantRight = r.right + expandPad;
           let to = -1;
           if (r.left < pr.left + EDGE) {
             to = Math.max(0, Math.round(p.scrollLeft + (r.left - pr.left) - EDGE));
-          } else if (r.right > pr.right - EDGE) {
-            to = Math.max(0, Math.round(p.scrollLeft + (r.right - pr.right) + EDGE));
+          } else if (wantRight > pr.right - EDGE) {
+            to = Math.max(0, Math.round(p.scrollLeft + (wantRight - pr.right) + EDGE));
           }
           if (to >= 0 && Math.abs(to - p.scrollLeft) > 2) {
             smoothRowScrollTo(p, to, instant);
@@ -648,7 +667,8 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
           return false;
         }
       });
-      if (activeIdx < 0) {
+      const activeContained = activeIdx >= 0;
+      if (!activeContained) {
         let bestD = Infinity;
         rows.forEach((rw, i) => {
           const d = dir === 'up'
@@ -662,15 +682,18 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
       }
       if (rows.length && activeIdx >= 0) {
         const picked: HTMLElement[] = [];
+        // active KHÔNG nằm trong hàng nào (vd card "Tiếp Tục Xem" không có
+        // [data-tv-row]): activeIdx chỉ là hàng GẦN NHẤT, phải xét inclusive
+        // từ chính nó — xét từ ±1 sẽ bỏ qua đúng hàng kề cần tới.
         if (dir === 'up') {
-          for (let i = activeIdx - 1; i >= 0 && picked.length < 48; i--) {
+          for (let i = activeContained ? activeIdx - 1 : activeIdx; i >= 0 && picked.length < 48; i--) {
             if (rows[i].bottom < activeDocTop - 4) {
               picked.push(...rows[i].cards);
               break; // chỉ lấy đúng 1 hàng gần nhất
             }
           }
         } else {
-          for (let i = activeIdx + 1; i < rows.length && picked.length < 48; i++) {
+          for (let i = activeContained ? activeIdx + 1 : activeIdx; i < rows.length && picked.length < 48; i++) {
             if (rows[i].top > activeDocBottom + 4) {
               picked.push(...rows[i].cards);
               break;

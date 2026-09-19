@@ -324,36 +324,88 @@ video::-webkit-media-controls {
   outline-offset: 2px !important;
   box-shadow: none !important;
 }
-/* P0-3 TV perf: KHÔNG animate width khi focus (mỗi phát D-pad gây reflow
-   cả hàng trên box yếu = giật ngang). Slot giữ width cố định; focus vẫn nhìn
-   rõ qua outline trắng + lớp .tv-land phủ landscape (opacity trên GPU). */
+/* Card focus NỞ NGANG width thật kiểu Netflix (re-layout, nội dung không méo):
+   - lề trái + height giữ nguyên (card neo trái slot, chỉ lề phải nở),
+   - MovieRow: 160px -> 320px lộ full backdrop (object-cover tự crop lại),
+   - Top10 poster: 128px -> 272px, số rank absolute bên trái giữ nguyên,
+   - đẩy layout có kiểm soát: hàng có spacer cuối + scroll bù chạm-mép trong
+     tvRemote nên item cuối hàng vẫn lộ đủ, không bị cắt.
+   - scaleX bị cấm ở đây: nó phóng cả raster (mặt/chữ bè ngang như bug đã gặp). */
 .tv-mode .group\/row .tv-row-slot {
   width: 160px;
   transition: none !important;
+  /* Slot là khung neo cố định; card con nở tràn ra ngoài khi focus */
+  overflow: visible;
 }
 .tv-mode .group\/row .tv-row-slot:focus-within {
-  z-index: 20;
+  z-index: 30;
+  position: relative;
 }
-/* Top10 TV: giữ width cố định, không nở */
+/* Inner card neo trái slot, nở width thật khi focus */
+.tv-mode .group\/row .tv-row-slot [data-tv-card] {
+  width: 100%;
+  margin-left: 0;
+  transform: none !important;
+}
+.tv-mode .group\/row .tv-row-slot [data-tv-card]:focus,
+.tv-mode .group\/row .tv-row-slot [data-tv-card]:focus-visible {
+  width: 320px;
+  height: 100%;
+  z-index: 30;
+  position: relative;
+}
+/* Top10 TV: slot neo cố định, poster nở width thật sang phải khi focus.
+   Số rank absolute bên trái giữ nguyên, margin-left/height giữ nguyên. */
 .tv-mode .tv-top10-slot {
   transition: none !important;
+  overflow: visible;
 }
 .tv-mode .tv-top10-slot [data-tv-card] {
-  transition: none !important;
+  transform: none !important;
+  /* Slot là flex row -> item con mặc định flex-shrink:1 nên width:272px
+     khi focus bị flex bóp lại vừa slot 160px (đây là lý do Top10 không nở
+     trong khi MovieRow dạng block vẫn nở). Ép không co/giãn để tràn visible. */
+  flex-shrink: 0 !important;
+  flex-grow: 0 !important;
+  flex-basis: auto !important;
+  max-width: none !important;
+  align-self: flex-end;
 }
 .tv-mode .tv-top10-slot:focus-within {
-  z-index: 20;
+  z-index: 30;
+  position: relative;
 }
-/* Card TV ngoài hàng ngang (lưới filter): không có slot nở, giữ tỉ lệ 2/3 */
-.tv-mode #filter-results-grid [data-tv-card] {
+.tv-mode .tv-top10-slot [data-tv-card]:focus,
+.tv-mode .tv-top10-slot [data-tv-card]:focus-visible {
+  width: 272px !important;
+  z-index: 30;
+  position: relative;
+}
+/* TV: chừa chỗ cuối hàng cho phần nở của item cuối (MovieRow nở +160px,
+   Top10 nở +~160px). Không spacer thì scrollLeft đã max, item cuối nở bị cắt. */
+.tv-mode [data-tv-row] {
+  padding-right: 180px !important;
+}
+/* Card TV ngoài hàng ngang (lưới filter): không có slot nở, giữ tỉ lệ 2/3.
+   LOẠI TRỪ card trong slot nở (row/top10) khỏi rule này. */
+.tv-mode #filter-results-grid [data-tv-card]:not(.tv-row-slot [data-tv-card]):not(.tv-top10-slot [data-tv-card]) {
   width: 100%;
   height: auto;
   aspect-ratio: 2 / 3;
 }
-/* Lớp landscape phủ kín card khi focus: fade-in opacity trên GPU,
-   không setState/re-render khi lia D-pad. */
+/* Card TV trong slot nở bị rule global transition:none chặn animation,
+   nên phải re-enable riêng tại đây (đặt SAU rule global để thắng specificity).
+   Animate width thật (không scale) để chữ/mặt không bè ngang. */
+.tv-mode .group\/row .tv-row-slot [data-tv-card],
+.tv-mode .tv-top10-slot [data-tv-card] {
+  transition: width 0.18s ease-out, outline-color 0.18s ease-out !important;
+}
 .tv-mode [data-tv-card] .tv-land {
   transition: opacity 0.18s ease-out !important;
+}
+/* Card đang bị card focus bên trái nở đè lên: hạ xuống để không vẽ đè viền trắng */
+.tv-mode [data-tv-card].tv-under-expand {
+  z-index: 1 !important;
 }
 .tv-mode .tv-land {
   position: absolute;
