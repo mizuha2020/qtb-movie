@@ -3,7 +3,7 @@ import Hls from 'hls.js';
 import { Play, Pause, Settings, Captions, RotateCcw, RotateCw, SkipForward, SkipBack, List, ChevronDown, FastForward, Lock } from 'lucide-react';
 import { EpisodeServer, Movie, MovieEpisode, Account, UserProfile } from '../types';
 import { getMirrorUrls } from '../utils/mirrorUrls';
-import { loadCleanedM3u8Url, revokeBlobUrl } from '../utils/m3u8Cleaner';
+import { loadCleanedM3u8Url, revokeBlobUrl, clearCleanedCache } from '../utils/m3u8Cleaner';
 import { getFullApiUrl, verifyBackendUrl } from '../services/apiConfig';
 import { resolveImdbId } from '../utils/introResolve';
 import { presenceService } from '../services/presenceService';
@@ -267,6 +267,12 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   // Nút play/pause giữa màn hình: flash ~1s mỗi lần bấm rồi tự ẩn
   const [showCenterFlash, setShowCenterFlash] = useState(false);
   const centerFlashTimer = useRef<number | null>(null);
+  // Pause->resume trên TV box yếu hay kẹt (URL segment hết hạn / decoder
+  // treo): dừng tải khi pause, resume thì watchdog tự cứu 2 nấc.
+  const pausedAtRef = useRef(0);
+  const resumeTimerRef = useRef<number | null>(null);
+  const bufferingTimerRef = useRef<number | null>(null);
+  const handleRetryRef = useRef<() => void>(() => {});
   const prevRateRef = useRef(1);
   const showControlsRef = useRef(true);
   showControlsRef.current = showControls;
@@ -835,10 +841,16 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       const raw = next?.link_m3u8 ? getMirrorUrls(next.link_m3u8)[0] : null;
       if (!raw) return;
       let cancelled = false;
-      // Đợi phát ổn định 5s rồi mới prefetch để khỏi tranh băng thông first-frame
+      // Đợi phát ổn định 5s rồi mới prefetch để khỏi tranh băng thông first-frame.
+      // Chỉ cần làm ấm text cache; blob dựng ra revoke ngay để khỏi đọng
+      // blob: mỗi vòng xem (mỗi tập N+1 có tới ~8 variant blob).
       const t = window.setTimeout(() => {
         if (cancelled) return;
-        loadCleanedM3u8Url(raw).catch(() => {});
+        loadCleanedM3u8Url(raw)
+          .then((res) => {
+            if (res) revokeBlobUrl([res.blobUrl, ...((res as any).extraBlobs || [])]);
+          })
+          .catch(() => {});
       }, 5000);
       return () => {
         cancelled = true;
@@ -1079,8 +1091,33 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
         } catch {}
         firstFrameTimer = null;
       }
+      try {
+        if (resumeTimerRef.current) {
+          window.clearTimeout(resumeTimerRef.current);
+          resumeTimerRef.current = null;
+        }
+        if (bufferingTimerRef.current) {
+          window.clearTimeout(bufferingTimerRef.current);
+          bufferingTimerRef.current = null;
+        }
+        pausedAtRef.current = 0;
+      } catch {}
       revokeBlobUrl([blobUrl, ...extraBlobs]);
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
+      // TV memory: nhả decoder + MSE buffer, kẻo lặp Home->Player->Back
+      // đọng video element mỗi vòng. handleRetry đã làm, cleanup cũng phải làm.
+      try {
+        if (video) {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        }
+      } catch {}
+      try {
+        if (hideControlsTimer.current) { window.clearTimeout(hideControlsTimer.current); hideControlsTimer.current = null; }
+        if (previewSeekTimer.current) { window.clearTimeout(previewSeekTimer.current); previewSeekTimer.current = null; }
+        if (previewHideTimer.current) { window.clearTimeout(previewHideTimer.current); previewHideTimer.current = null; }
+      } catch {}
     };
   }, [currentEpisode.link_m3u8, currentEpisode.link_embed, isResolvingSource, allServers, currentServer, initialTime, onSelectEpisode, retryKey]);
 
@@ -1098,6 +1135,58 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
     setIsLoading(true);
     setRetryKey(k => k + 1);
   }, [currentTime]);
+  handleRetryRef.current = handleRetry;
+
+  const clearResumeWatchdog = useCallback(() => {
+    try {
+      if (resumeTimerRef.current) {
+        window.clearTimeout(resumeTimerRef.current);
+        resumeTimerRef.current = null;
+      }
+    } catch {}
+  }, []);
+
+  /** Kiểm tra sau resume: giờ không nhích mà vẫn playing -> kẹt. */
+  const checkResumeStuck = useCallback((t0: number, stage: 1 | 2) => {
+    try {
+      const v = videoRef.current;
+      if (!v || v.paused || v.seeking || v.ended) return;
+      if (isDraggingRef.current || seekModeRef.current) return;
+      if (v.currentTime - t0 >= 0.2) return; // chạy bình thường
+      if (stage === 1) {
+        // Nấc 1: micro-seek flush buffer + restart load (nhẹ, không đổi source)
+        try {
+          hlsRef.current?.stopLoad();
+        } catch {}
+        try {
+          v.currentTime = Math.max(0, v.currentTime + 0.05);
+        } catch {}
+        try {
+          (hlsRef.current as any)?.startLoad?.(v.currentTime);
+        } catch {}
+        resumeTimerRef.current = window.setTimeout(() => checkResumeStuck(v.currentTime, 2), 3000);
+      } else {
+        // Nấc 2: URL segment có thể đã hết hạn (pause lâu) -> xóa cache clean
+        // để resolve tươi rồi rebuild pipeline giữ nguyên vị trí
+        try {
+          clearCleanedCache();
+        } catch {}
+        try {
+          handleRetryRef.current?.();
+        } catch {}
+      }
+    } catch {}
+  }, []);
+
+  const armResumeWatchdog = useCallback(() => {
+    clearResumeWatchdog();
+    try {
+      const v = videoRef.current;
+      if (!v) return;
+      const t0 = v.currentTime;
+      resumeTimerRef.current = window.setTimeout(() => checkResumeStuck(t0, 1), 3000);
+    } catch {}
+  }, [checkResumeStuck, clearResumeWatchdog]);
 
   // Server khác cùng tập (dùng cho nút Đổi server khi lỗi)
   const altServerEp = useMemo(() => {
@@ -2040,6 +2129,9 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       if (seekFlashTimer.current) window.clearTimeout(seekFlashTimer.current);
       if (centerFlashTimer.current) window.clearTimeout(centerFlashTimer.current);
       if (holdTimer.current) window.clearTimeout(holdTimer.current);
+      if (hideControlsTimer.current) window.clearTimeout(hideControlsTimer.current);
+      if (previewSeekTimer.current) window.clearTimeout(previewSeekTimer.current);
+      if (previewHideTimer.current) window.clearTimeout(previewHideTimer.current);
     };
   }, [togglePlay, skip, toggleFullscreen, toggleMute, activeSegment, handleSkipSegment, duration, renderScrubPreview, smartSeek, enterSeekMode, moveSeekFocus, commitSeek]);
 
@@ -2096,10 +2188,67 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             onContextMenu={e => e.preventDefault()}
             onTimeUpdate={handleTimeUpdate}
             onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
-            onPlay={() => setIsPlaying(true)}
-            onPause={() => { setIsPlaying(false); saveProgressNow(); }}
-            onWaiting={() => { setIsLoading(true); setLoadStage('buffering'); }}
-            onPlaying={() => { setIsLoading(false); setLoadStage(''); }}
+            onPlay={() => {
+              setIsPlaying(true);
+              // Resume: tiếp tục tải + gác watchdog (chỉ khi play sau pause,
+              // autoplay lần đầu không cần)
+              try {
+                hlsRef.current?.startLoad();
+              } catch {}
+              try {
+                if (pausedAtRef.current) {
+                  pausedAtRef.current = 0;
+                  armResumeWatchdog();
+                }
+              } catch {}
+            }}
+            onPause={() => {
+              setIsPlaying(false);
+              saveProgressNow();
+              // Pause: dừng tải (đỡ tốn RAM/băng thông box yếu) + dẹp spinner
+              try {
+                pausedAtRef.current = Date.now();
+              } catch {}
+              try {
+                hlsRef.current?.stopLoad();
+              } catch {}
+              clearResumeWatchdog();
+              try {
+                if (bufferingTimerRef.current) {
+                  window.clearTimeout(bufferingTimerRef.current);
+                  bufferingTimerRef.current = null;
+                }
+              } catch {}
+              setIsLoading(false);
+            }}
+            onWaiting={() => {
+              // Debounce 1.2s: stall thoáng qua không hiện spinner (đỡ re-render
+              // giật trên TV), kẹt thật mới hiện
+              try {
+                if (bufferingTimerRef.current) {
+                  window.clearTimeout(bufferingTimerRef.current);
+                }
+              } catch {}
+              bufferingTimerRef.current = window.setTimeout(() => {
+                try {
+                  const vv = videoRef.current;
+                  if (vv && !vv.paused && vv.readyState < 3) {
+                    setIsLoading(true);
+                    setLoadStage('buffering');
+                  }
+                } catch {}
+              }, 1200);
+            }}
+            onPlaying={() => {
+              try {
+                if (bufferingTimerRef.current) {
+                  window.clearTimeout(bufferingTimerRef.current);
+                  bufferingTimerRef.current = null;
+                }
+              } catch {}
+              setIsLoading(false);
+              setLoadStage('');
+            }}
             onEnded={() => { if (nextEpisode) onSelectEpisode(nextEpisode, currentServer); }}
             playsInline
             disablePictureInPicture={false}

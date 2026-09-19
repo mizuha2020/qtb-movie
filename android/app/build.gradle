@@ -18,7 +18,10 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
+            // P0-2 TV: APK nhẹ + dex load nhanh hơn trên box yếu.
+            // Chỉ áp dụng release; debug giữ false để build nhanh.
+            minifyEnabled true
+            shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
     }

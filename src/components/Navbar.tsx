@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Account, NavTab, UserProfile, ApiSource } from '../types';
-import { appConfigService } from '../services/appConfigService';
+// Phase 2: appConfig subscribe hoãn sau paint (dynamic import, xem useEffect).
 import {
   Search,
   ChevronDown,
@@ -27,11 +27,13 @@ import { Capacitor } from '@capacitor/core';
 import { useTvMode } from '../hooks/useTvMode';
 import { setTvModeOverride } from '../utils/tvDetect';
 import { ensureTvFocus } from '../utils/tvRemote';
-import { movieApi, getImageUrl, API_SOURCES } from '../services/movieApi';
-import { getFullApiUrl } from '../services/apiConfig';
+import { movieApi, getImageUrl } from '../services/movieApi';
 import { Movie } from '../types';
-import { motion, AnimatePresence } from 'motion/react';
-import { TvPairApproveModal } from './TvPairApproveModal';
+// Phase 2: bỏ motion khỏi navbar (TV tắt transition bằng CSS; animate width
+// trên navbar gây reflow mỗi lần mở search). Pair modal lazy (hiếm khi dùng).
+const TvPairApproveModal = React.lazy(() =>
+  import('./TvPairApproveModal').then((m) => ({ default: m.TvPairApproveModal }))
+);
 import appLogo from '../assets/images/app_logo.jpg';
 
 interface NavbarProps {
@@ -98,9 +100,27 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isNativeApp = (() => { try { return Capacitor.isNativePlatform(); } catch { return false; } })();
   const isTvMode = useTvMode();
 
+  // Phase 2: hoãn 2s sau paint — navbar vẽ trước, trạng thái livetv补 sau.
   useEffect(() => {
-    const unsub = appConfigService.subscribe((cfg) => setAppConfig(cfg));
-    return unsub;
+    let unsub: (() => void) | undefined;
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      import('../services/appConfigService')
+        .then((m) => {
+          if (cancelled) return;
+          try {
+            unsub = m.appConfigService.subscribe((cfg) => setAppConfig(cfg));
+          } catch {}
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+      try {
+        unsub?.();
+      } catch {}
+    };
   }, []);
 
   const handleProfileClickInDropdown = (p: UserProfile) => {
@@ -349,34 +369,28 @@ export const Navbar: React.FC<NavbarProps> = ({
               </button>
             ))}
 
-            {/* Secondary items: Smoothly hide when search expands to the left */}
-            <AnimatePresence initial={false}>
-              {!isSearchOpen && (
-                <motion.div
-                  key="secondary-nav-group"
-                  initial={{ opacity: 0, width: 0 }}
-                  animate={{ opacity: 1, width: 'auto' }}
-                  exit={{ opacity: 0, width: 0 }}
-                  transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
-                  className="flex items-center gap-2 lg:gap-4 overflow-hidden whitespace-nowrap"
-                >
-                  {secondaryNavItems.map((item) => (
-                    <button
-                      key={item.tab}
-                      id={`nav-link-${item.tab}`}
-                      onClick={() => onTabChange(item.tab)}
-                      className={`cursor-pointer whitespace-nowrap px-2 py-1.5 rounded-lg text-xs lg:text-sm flex items-center gap-1.5 transition-[background-color,box-shadow,border-color,color,transform] duration-200 ease-out ${
-                        activeTab === item.tab
-                          ? 'text-sky-300 font-bold bg-blue-900/30 border border-blue-700/40 shadow-sm scale-[1.01]'
-                          : 'text-slate-300 hover:text-white hover:bg-white/5'
-                      }`}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
+            {/* Secondary items: ẩn khi search mở (Phase 2: div thường, khỏi animate width gây reflow) */}
+            {!isSearchOpen && (
+              <div
+                key="secondary-nav-group"
+                className="flex items-center gap-2 lg:gap-4 overflow-hidden whitespace-nowrap"
+              >
+                {secondaryNavItems.map((item) => (
+                  <button
+                    key={item.tab}
+                    id={`nav-link-${item.tab}`}
+                    onClick={() => onTabChange(item.tab)}
+                    className={`cursor-pointer whitespace-nowrap px-2 py-1.5 rounded-lg text-xs lg:text-sm flex items-center gap-1.5 transition-[background-color,box-shadow,border-color,color,transform] duration-200 ease-out ${
+                      activeTab === item.tab
+                        ? 'text-sky-300 font-bold bg-blue-900/30 border border-blue-700/40 shadow-sm scale-[1.01]'
+                        : 'text-slate-300 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            )}
           </nav>
         </div>
 
@@ -384,14 +398,10 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="flex items-center gap-2.5 sm:gap-4 shrink-0">
           {/* Desktop/Tablet Expandable Search Bar */}
           <div ref={searchContainerRef} className="relative flex items-center justify-end">
-            <AnimatePresence initial={false}>
-              {isSearchOpen ? (
-                <motion.div
+            {isSearchOpen ? (
+                <div
                   key="search-input-active"
-                  initial={{ width: 40, opacity: 0.4 }}
-                  animate={{ width: 'clamp(220px, 32vw, 360px)', opacity: 1 }}
-                  exit={{ width: 40, opacity: 0 }}
-                  transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                  style={{ width: 'clamp(220px, 32vw, 360px)' }}
                   className="hidden sm:flex items-center bg-[#131f37]/98 border border-blue-600/70 rounded-full px-3 py-1.5 shadow-2xl shadow-blue-950/60 backdrop-blur-md"
                 >
                   <Search
@@ -440,24 +450,19 @@ export const Navbar: React.FC<NavbarProps> = ({
                       <X className="w-4 h-4" />
                     </button>
                   )}
-                </motion.div>
+                </div>
               ) : (
-                <motion.button
+                <button
                   key="search-btn-collapsed"
                   id="search-toggle-btn-desktop"
-                  initial={{ scale: 0.9, opacity: 0 }}
-                  animate={{ scale: 1, opacity: 1 }}
-                  exit={{ scale: 0.9, opacity: 0, position: 'absolute', right: 0 }}
-                  transition={{ duration: 0.18 }}
                   onClick={handleOpenSearch}
                   className="hidden sm:flex items-center justify-center w-9 h-9 rounded-full bg-slate-900/60 hover:bg-[#131f37] border border-slate-800/80 hover:border-blue-700/60 text-slate-300 hover:text-sky-300 cursor-pointer transition-all hover:scale-105"
                   title="Tìm kiếm phim"
                   aria-label="Tìm kiếm phim"
                 >
                   <Search className="w-4 h-4" />
-                </motion.button>
+                </button>
               )}
-            </AnimatePresence>
 
             {/* Mobile Search Icon Trigger */}
             <button
@@ -973,14 +978,10 @@ export const Navbar: React.FC<NavbarProps> = ({
         </div>
       )}
 
-      {/* Profile PIN Unlock Modal */}
-      <AnimatePresence>
-        {pinPromptProfile && (
+      {/* Profile PIN Unlock Modal (Phase 2: div thường, khỏi motion) */}
+      {pinPromptProfile && (
           <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3.5 sm:p-4">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 10 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+            <div
               className="w-full max-w-sm bg-[#0f172a] border border-blue-900/80 rounded-3xl p-5 sm:p-6 text-white text-center shadow-2xl"
             >
               <div
@@ -1041,14 +1042,15 @@ export const Navbar: React.FC<NavbarProps> = ({
                   </button>
                 </div>
               </form>
-            </motion.div>
+            </div>
           </div>
         )}
-      </AnimatePresence>
 
-      {/* Ghép đôi TV: nhập mã đang hiện trên TV */}
+      {/* Ghép đôi TV: nhập mã đang hiện trên TV (lazy) */}
       {isPairModalOpen && currentAccount && (
-        <TvPairApproveModal account={currentAccount} onClose={() => setIsPairModalOpen(false)} />
+        <React.Suspense fallback={null}>
+          <TvPairApproveModal account={currentAccount} onClose={() => setIsPairModalOpen(false)} />
+        </React.Suspense>
       )}
     </header>
   );

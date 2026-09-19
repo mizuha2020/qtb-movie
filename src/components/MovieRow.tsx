@@ -88,9 +88,9 @@ export const MovieRow: React.FC<MovieRowProps> = ({
         window.innerWidth >= 1920 ||
         document.documentElement.classList.contains("tv-mode");
       if (isTvScreen) {
-        // TV gọn kiểu Netflix: card 176px -> 1 màn hình thấy ~10 card + 3-4 hàng
+        // TV gọn kiểu Netflix: card 160px -> 1 màn hình thấy ~10 card + 3-4 hàng
         setGap(24);
-        setItemWidth(176);
+        setItemWidth(160);
         return;
       }
       setGap(mobile ? (isTop10 ? 20 : 16) : isTop10 ? 32 : 24);
@@ -108,10 +108,17 @@ export const MovieRow: React.FC<MovieRowProps> = ({
   }, [isTop10]);
 
   const rowHeightClass = isTv
-    ? "h-[300px]"
+    ? "h-[260px]"
     : isTop10
     ? "h-[300px] sm:h-[360px]"
     : "h-[250px] sm:h-[330px] md:h-[360px]";
+
+  // TV box yếu: mỗi hàng tối đa 24 card (đủ vuốt 2-3 màn hình).
+  // Hàng 30-50 card như desktop = 300+ DOM + 300 ảnh decode -> D-pad quét rect lag.
+  const displayMovies = useMemo(
+    () => (isTv && movies?.length > 24 ? movies.slice(0, 24) : movies),
+    [isTv, movies],
+  );
 
   // ========== MOBILE: native scroll (behavior ổn định tại commit 52269b8 / e0ccb2e) ==========
   const containerRef = useRef<HTMLDivElement>(null);
@@ -123,12 +130,19 @@ export const MovieRow: React.FC<MovieRowProps> = ({
   const scrollLeftStartRef = useRef(0);
   const hasMovedRef = useRef(false);
 
+  // Throttle bằng rAF: onScroll native bắn hàng chục event/s,
+  // mỗi event setState là re-render cả hàng -> giật D-pad trên box yếu.
+  const scrollBoundsRaf = useRef(0);
   const checkScrollBounds = useCallback(() => {
-    const el = containerRef.current;
-    if (!el) return;
-    const { scrollLeft, scrollWidth, clientWidth } = el;
-    setCanScrollLeft(scrollLeft > 8);
-    setCanScrollRight(scrollLeft < scrollWidth - clientWidth - 8);
+    if (scrollBoundsRaf.current) return;
+    scrollBoundsRaf.current = requestAnimationFrame(() => {
+      scrollBoundsRaf.current = 0;
+      const el = containerRef.current;
+      if (!el) return;
+      const { scrollLeft, scrollWidth, clientWidth } = el;
+      setCanScrollLeft(scrollLeft > 8);
+      setCanScrollRight(scrollLeft < scrollWidth - clientWidth - 8);
+    });
   }, []);
 
   useEffect(() => {
@@ -137,7 +151,7 @@ export const MovieRow: React.FC<MovieRowProps> = ({
     const handleResize = () => checkScrollBounds();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
-  }, [checkScrollBounds, movies, isMobile]);
+  }, [checkScrollBounds, displayMovies, isMobile]);
 
   const handleMobileScrollBtn = (direction: "left" | "right") => {
     const el = containerRef.current;
@@ -408,11 +422,11 @@ export const MovieRow: React.FC<MovieRowProps> = ({
     [isInMyList],
   );
 
-  if (!movies || movies.length === 0) {
+  if (!displayMovies || displayMovies.length === 0) {
     if (pending) return <RowSkeleton title={title} tall={isTop10} />;
     return null;
   }
-  const canScroll = movies.length > 2;
+  const canScroll = displayMovies.length > 2;
 
   // MOBILE: native scroll - behavior giống e0ccb2e/52269b8
   if (isMobile) {
@@ -452,11 +466,11 @@ export const MovieRow: React.FC<MovieRowProps> = ({
               gap: `${gap}px`,
             }}
           >
-            {movies.map((movie, index) => (
+            {displayMovies.map((movie, index) => (
               <div
                 key={`${movie.slug || movie._id || "movie"}-${index}`}
-                className="flex-shrink-0 h-full"
-                style={{ width: `${itemWidth}px` }}
+                className={`flex-shrink-0 h-full${isTv ? ' tv-row-slot' : ''}`}
+                style={isTv ? { contain: 'layout style' } : { width: `${itemWidth}px` }}
               >
                 <MovieCard
                   movie={movie}

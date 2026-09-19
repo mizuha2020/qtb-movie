@@ -19,3 +19,14 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# P0-2: giữ class khi minify release (Capacitor bridge + plugin + ExoPlayer
+# gọi qua reflection; strip nhầm là crash lúc mở app/player).
+-keep class com.getcapacitor.** { *; }
+-keep class com.capacitorjs.** { *; }
+-keep class com.qtbcinema.app.** { *; }
+-keep class androidx.media3.** { *; }
+-keepclasseswithmembernames class * {
+    @com.getcapacitor.PluginMethod public *;
+}
+-keepattributes *Annotation*, Signature, InnerClasses, EnclosingMethod

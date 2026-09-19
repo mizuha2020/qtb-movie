@@ -34,6 +34,9 @@ export const TvDetailHero: React.FC<Props> = ({
             alt=""
             className="w-full h-full object-cover object-[50%_20%]"
             loading="eager"
+            decoding="async"
+            width={1280}
+            height={720}
             referrerPolicy="no-referrer"
             onError={(e) => {
               const img = e.target as HTMLImageElement;
@@ -64,7 +67,7 @@ export const TvDetailHero: React.FC<Props> = ({
       </div>
       <div className="relative z-10 flex items-start gap-6 px-14 pt-5 pb-5 max-w-[1500px] w-full">
         <div className="shrink-0 w-[150px] aspect-[2/3] rounded-2xl overflow-hidden shadow-2xl border border-white/15 bg-slate-900">
-          <img src={data.poster_url ? getImageUrl(data.poster_url, (data as any).source) : getImageUrl(data.thumb_url, (data as any).source)} alt={data.name} className="w-full h-full object-cover" loading="eager" referrerPolicy="no-referrer" />
+          <img src={data.poster_url ? getImageUrl(data.poster_url, (data as any).source) : getImageUrl(data.thumb_url, (data as any).source)} alt={data.name} className="w-full h-full object-cover" loading="eager" decoding="async" width={300} height={450} referrerPolicy="no-referrer" />
         </div>
         <div className="flex-1 min-w-0 space-y-2 pb-1 overflow-visible">
           <div className="space-y-1 overflow-visible">

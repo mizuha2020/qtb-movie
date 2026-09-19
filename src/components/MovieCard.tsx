@@ -1,7 +1,7 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Movie } from '../types';
 import { Play, Plus, Check, ChevronDown, ThumbsUp } from 'lucide-react';
-import { getImageUrl } from '../services/movieApi';
+import { getImageUrl, sizedTmdbUrl } from '../services/movieApi';
 import { useTvMode } from '../hooks/useTvMode';
 
 interface MovieCardProps {
@@ -43,7 +43,10 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
     }
   };
 
-  const imgUrl = getImageUrl(movie.poster_url || movie.thumb_url);
+  // TV box yếu: card chỉ hiển thị 176px -> ép TMDB về w300 (vài chục KB)
+  // thay vì w500/original (vài trăm KB - vài MB), giảm decode + RAM.
+  const rawImg = getImageUrl(movie.poster_url || movie.thumb_url);
+  const imgUrl = isTv ? (sizedTmdbUrl(rawImg, 'w300') || rawImg) : rawImg;
 
   const matchPercentage = Math.floor(92 + (((movie.year || 2024) * 7 + (movie.name.length * 3)) % 8));
 
@@ -82,14 +85,15 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
       id={`movie-card-${movie.slug || movie._id}`}
       tabIndex={0}
       data-tv-card={movie.slug || movie._id}
-      className={`relative group shrink-0 select-none focus:outline-none focus:ring-4 focus:ring-blue-500 focus:z-10 ${isTv ? 'w-44 focus:ring-[6px]' : 'transition-all duration-300 focus:scale-105'} ${
+      className={`relative group shrink-0 select-none focus:outline-none ${isTv ? 'w-full h-full' : 'focus:ring-4 focus:ring-blue-500 focus:z-10 transition-all duration-300 focus:scale-105'} ${
         isTv ? '' : isTop10 ? 'w-44 sm:w-56 h-64 sm:h-80' : 'w-36 sm:w-48 md:w-52'
       }`}
-      onMouseEnter={handleMouseEnter}
-      onMouseLeave={() => setIsHovered(false)}
+      onMouseEnter={isTv ? undefined : handleMouseEnter}
+      onMouseLeave={isTv ? undefined : () => setIsHovered(false)}
       // TV: không popup hover (vừa lag vừa kẹt focus qua nút ẩn -> tốn 2 lần bấm DPAD)
+      // + không setState theo focus để tránh re-render cả hàng mỗi lần bấm D-pad
       onFocus={() => { if (!isTv) { updatePosition(); setIsHovered(true); } }}
-      onBlur={() => setIsHovered(false)}
+      onBlur={() => { if (!isTv) setIsHovered(false); }}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
           e.preventDefault();
@@ -114,20 +118,27 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
       )}
 
       <div
-        className={`relative w-full h-full rounded-xl overflow-hidden bg-[#0f172a] border border-slate-800/90 shadow-md transition-all duration-300 group-hover:shadow-[0_0_25px_rgba(37,99,235,0.3)] group-hover:border-blue-500/60 ${
-          !isTv && isTop10 ? 'ml-16 sm:ml-20 w-[calc(100%-4rem)] sm:w-[calc(100%-5rem)]' : 'aspect-[2/3]'
-        }`}
+        className={isTv
+          ? 'absolute inset-0 rounded-xl overflow-hidden bg-[#0f172a] border border-slate-800/90'
+          : `relative w-full h-full rounded-xl overflow-hidden bg-[#0f172a] border border-slate-800/90 shadow-md transition-all duration-300 group-hover:shadow-[0_0_25px_rgba(37,99,235,0.3)] group-hover:border-blue-500/60 ${
+              isTop10 ? 'ml-16 sm:ml-20 w-[calc(100%-4rem)] sm:w-[calc(100%-5rem)]' : 'aspect-[2/3]'
+            }`}
         onClick={handleOpenDetail}
       >
         <img
           src={imgUrl}
           alt={movie.name}
-          className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 group-focus:scale-105"
+          width={160}
+          height={240}
+          draggable={false}
+          className={isTv ? 'w-full h-full object-cover' : 'w-full h-full object-cover transition-transform duration-500 group-hover:scale-105 group-focus:scale-105'}
           loading="lazy"
           decoding="async"
+          // @ts-expect-error fetchpriority cho browser mới, cũ bỏ qua
+          fetchpriority="low"
           onError={(e) => {
             (e.target as HTMLImageElement).src =
-              'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=400&auto=format&fit=crop&q=80';
+              'https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=300&auto=format&fit=crop&q=60';
           }}
         />
 
@@ -170,6 +181,36 @@ export const MovieCard: React.FC<MovieCardProps> = React.memo(({
             {movie.lang && <span className="text-[10px] text-sky-300/80 shrink-0 ml-1">{movie.lang}</span>}
           </div>
         </div>
+        {/* TV landscape: phủ kín card khi focus (fade-in GPU), height giữ nguyên,
+            width nở theo slot. Thuần CSS, không setState khi lia D-pad. */}
+        {isTv && (
+          <div className="tv-land" aria-hidden="true">
+            {(() => {
+              const rawLand = (movie as any).backdrop_url || movie.thumb_url || movie.poster_url || '';
+              const land = sizedTmdbUrl(getImageUrl(rawLand), 'w500') || imgUrl;
+              return (
+                <img
+                  src={land}
+                  alt=""
+                  loading="lazy"
+                  decoding="async"
+                  draggable={false}
+                  onError={(e) => {
+                    const im = e.target as HTMLImageElement;
+                    if (im.src !== imgUrl) im.src = imgUrl;
+                  }}
+                />
+              );
+            })()}
+            <div className="tv-land-shade" />
+            <div className="tv-land-meta">
+              <div className="tv-land-title">{movie.name}</div>
+              <div className="tv-land-sub">
+                {[movie.year, movie.quality, movie.episode_current].filter(Boolean).join(' • ')}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {!isTv && isHovered && hoverPos && (

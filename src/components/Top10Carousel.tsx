@@ -8,7 +8,7 @@ import React, {
 } from "react";
 import { Movie } from "../types";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { getImageUrl } from "../services/movieApi";
+import { getImageUrl, sizedTmdbUrl } from "../services/movieApi";
 import { useTvMode } from "../hooks/useTvMode";
 import { smoothScrollHorizontal } from "../utils/scrollUtils";
 import { RowSkeleton } from "./RowSkeleton";
@@ -419,11 +419,11 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
             {top10Movies.map((movie, index) => (
               <div
                 key={`${movie.slug || "top10"}-${index}`}
-                className={`relative flex-shrink-0 flex items-end ${isTv ? "w-44 h-60" : "w-64 h-80"}`}
+                className={`relative flex-shrink-0 flex items-end ${isTv ? "w-40 h-56 tv-top10-slot" : "w-64 h-80"}`}
               >
                 <div className="absolute left-0 bottom-0 z-0 flex items-center justify-start h-full">
                   <span
-                    className={`font-black italic text-black select-none ${isTv ? "text-[8rem]" : "text-[12rem]"}`}
+                    className={`font-black italic text-black select-none ${isTv ? "text-[7rem]" : "text-[12rem]"}`}
                     style={{
                       WebkitTextStroke: `3px ${accentColor}`,
                       textShadow: `0 0 24px ${accentColor}80`,
@@ -441,11 +441,11 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
                       handleClickItem(movie);
                     }
                   }}
-                  className={`relative z-10 rounded-lg overflow-hidden cursor-pointer shadow-2xl bg-[#0f172a] focus:outline-none focus:ring-4 focus:ring-blue-500 ${isTv ? "ml-10 w-32 h-48" : "ml-16 w-48 h-72 transition-transform hover:scale-105"}`}
+                  className={`relative z-10 rounded-lg overflow-hidden cursor-pointer shadow-2xl bg-[#0f172a] focus:outline-none ${isTv ? "ml-10 w-28 h-44" : "ml-16 w-48 h-72 transition-transform hover:scale-105 focus:ring-4 focus:ring-blue-500"}`}
                   onClick={() => handleClickItem(movie)}
                 >
                   <img
-                    src={getImageUrl(movie.poster_url || movie.thumb_url)}
+                    src={isTv ? (sizedTmdbUrl(getImageUrl(movie.poster_url || movie.thumb_url), 'w300') || getImageUrl(movie.poster_url || movie.thumb_url)) : getImageUrl(movie.poster_url || movie.thumb_url)}
                     alt={movie.name}
                     className="w-full h-full object-cover pointer-events-none"
                     loading={isTv ? "lazy" : "eager"}
@@ -453,7 +453,7 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
                     onError={(e) => {
                       const target = e.currentTarget as HTMLImageElement;
                       if (!target.src.includes("unsplash")) {
-                        target.src = "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=800&auto=format&fit=crop&q=80";
+                        target.src = "https://images.unsplash.com/photo-1536440136628-849c177e76a1?w=300&auto=format&fit=crop&q=60";
                       }
                     }}
                   />
@@ -462,6 +462,21 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
                       {movie.name}
                     </p>
                   </div>
+                  {isTv && (
+                    <div className="tv-land" aria-hidden="true">
+                      <img
+                        src={sizedTmdbUrl(getImageUrl((movie as any).backdrop_url || movie.thumb_url || movie.poster_url), 'w500') || getImageUrl(movie.poster_url || movie.thumb_url)}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        draggable={false}
+                      />
+                      <div className="tv-land-shade" />
+                      <div className="tv-land-meta">
+                        <div className="tv-land-title">{movie.name}</div>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}

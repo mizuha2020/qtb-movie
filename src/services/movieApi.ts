@@ -2022,7 +2022,12 @@ export const movieApi = {
   },
 
   // 13. Netflix Vietnam Top 10 API - Đọc trực tiếp từ RTDB / Firebase để luôn mới nhất
+  // TV perf: bọc cache + dedupe inflight (trước đây đọc Firebase mỗi lần,
+  // remount Home là fetch lại).
   async getNetflixTop10VN(): Promise<{ movies: Movie[]; tvShows: Movie[]; movieTitles: string[]; tvTitles: string[] }> {
+    return cachedFetch('netflixTop10VN', () => this.loadNetflixTop10VN());
+  },
+  async loadNetflixTop10VN(): Promise<{ movies: Movie[]; tvShows: Movie[]; movieTitles: string[]; tvTitles: string[] }> {
     const nowTs = Date.now();
 
     // 1. Đọc trực tiếp từ RTDB (Primary Database)

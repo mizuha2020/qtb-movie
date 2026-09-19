@@ -28,6 +28,16 @@ export default defineConfig(() => {
         output: {
           manualChunks(id: string) {
             if (!id.includes('node_modules')) return undefined;
+            // Phase 2: react + jsx-runtime PHẢI ở chunk riêng. Trước đây
+            // jsx-runtime rớt chung vào vendor-motion (do motion import nó),
+            // khiến entry import tĩnh vendor-motion -> motion parse lúc startup
+            // dù không component sync nào dùng motion.
+            if (
+              id.includes('node_modules/react/') ||
+              id.includes('node_modules/react-dom/') ||
+              id.includes('node_modules/scheduler/')
+            )
+              return 'vendor-react';
             if (id.includes('@firebase') || id.includes('node_modules/firebase')) return 'vendor-firebase';
             if (id.includes('hls.js') || id.includes('hls.js')) return 'vendor-hls';
             if (id.includes('shaka-player')) return 'vendor-shaka';

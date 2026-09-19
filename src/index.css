@@ -306,16 +306,122 @@ video::-webkit-media-controls {
 .tv-mode .animate-cucumber-marquee { animation: none !important; }
 .tv-mode .animate-pulse, .tv-mode .animate-ping, .tv-mode .animate-spin-slow { animation: none !important; }
 .tv-mode [data-tv-card] { scroll-margin: 24px; border-radius: 12px; }
-/* Focus card kiểu Netflix: chỉ zoom (không viền), transition riêng transform cho mượt */
+/* Focus card kiểu Netflix: viền trắng mảnh, KHÔNG scale khung ngoài.
+   Khung ngoài giữ nguyên size -> hàng không reflow khi lia focus.
+   Phần nở ngang landscape do .tv-focus-preview (overlay GPU) đảm nhiệm. */
+.tv-mode [data-tv-card] {
+  transform: translateZ(0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+}
 .tv-mode [data-tv-card]:focus,
 .tv-mode [data-tv-card]:focus-visible {
   z-index: 20;
   position: relative;
-  transform: scale(1.07);
-  outline: none !important;
+  transform: translateZ(0);
+  /* Viền trắng mảnh ôm card đã nở, kiểu Netflix */
+  outline: 2px solid #fff !important;
+  outline-offset: 2px !important;
   box-shadow: none !important;
 }
-.tv-mode [data-tv-card] { transition: transform 0.18s ease-out !important; }
+/* P0-3 TV perf: KHÔNG animate width khi focus (mỗi phát D-pad gây reflow
+   cả hàng trên box yếu = giật ngang). Slot giữ width cố định; focus vẫn nhìn
+   rõ qua outline trắng + lớp .tv-land phủ landscape (opacity trên GPU). */
+.tv-mode .group\/row .tv-row-slot {
+  width: 160px;
+  transition: none !important;
+}
+.tv-mode .group\/row .tv-row-slot:focus-within {
+  z-index: 20;
+}
+/* Top10 TV: giữ width cố định, không nở */
+.tv-mode .tv-top10-slot {
+  transition: none !important;
+}
+.tv-mode .tv-top10-slot [data-tv-card] {
+  transition: none !important;
+}
+.tv-mode .tv-top10-slot:focus-within {
+  z-index: 20;
+}
+/* Card TV ngoài hàng ngang (lưới filter): không có slot nở, giữ tỉ lệ 2/3 */
+.tv-mode #filter-results-grid [data-tv-card] {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 3;
+}
+/* Lớp landscape phủ kín card khi focus: fade-in opacity trên GPU,
+   không setState/re-render khi lia D-pad. */
+.tv-mode [data-tv-card] .tv-land {
+  transition: opacity 0.18s ease-out !important;
+}
+.tv-mode .tv-land {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none !important;
+  background: #0f172a;
+}
+.tv-mode .tv-land img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.tv-mode .tv-land-shade {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(7,11,22,0.92) 0%, rgba(7,11,22,0.25) 55%, transparent 100%);
+}
+.tv-mode .tv-land-meta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 10px 12px;
+}
+.tv-mode .tv-land-title {
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tv-mode .tv-land-sub {
+  color: #94a3b8;
+  font-size: 12px;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tv-mode [data-tv-card]:focus .tv-land,
+.tv-mode [data-tv-card]:focus-visible .tv-land {
+  opacity: 1;
+  visibility: visible;
+}
+/* Kill CSS đắt trên box yếu: filter/drop-shadow/text-shadow/box-shadow lớn
+   trong card + hero (mỗi card x300 lần = nguyên nhân giật khi scroll). */
+.tv-mode [data-tv-card] img,
+.tv-mode [data-tv-card] .bg-gradient-to-t {
+  filter: none !important;
+}
+.tv-mode [data-tv-card] *,
+.tv-mode .group\/row * {
+  text-shadow: none !important;
+  box-shadow: none !important;
+}
+.tv-mode [data-tv-card]:focus,
+.tv-mode [data-tv-card]:focus-visible {
+  box-shadow: none !important;
+}
+.tv-mode #qtb-hero-banner img {
+  filter: none !important;
+}
 /* Profile selector trên TV: outline CHỈ ôm avatar (không ôm cả tên bên dưới).
    Card chỉ là vùng bấm, tắt zoom/viền cấp card; vòng sáng vẽ trên .profile-avatar. */
 .tv-mode #qtb-profile-selector [data-tv-card]:focus,
@@ -357,7 +463,7 @@ video::-webkit-media-controls {
    contain-intrinsic-size giữ chỗ để không trượt focus/layout shift. */
 .tv-mode .group\/row {
   content-visibility: auto;
-  contain-intrinsic-size: auto 320px;
+  contain-intrinsic-size: auto 280px;
 }
 /* Hero detail TV gọn: không bao giờ cần scroll trong (1 màn hình là đủ) */
 .tv-mode #detail-hero-tv { contain: layout style; }

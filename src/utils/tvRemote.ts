@@ -217,7 +217,8 @@ function describeEl(el: HTMLElement | null): string {
   if (!el) return '(none)';
   try {
     const id = el.id || el.getAttribute('data-tv-card') || '?';
-    const r = el.getBoundingClientRect();
+    // Dùng rect cache (tránh thêm 2 GBCR uncached mỗi phím cho log debug)
+    const r = cachedRect(el);
     return `${el.tagName}#${id} y=${Math.round(r.top)}..${Math.round(r.bottom)}`;
   } catch {
     return '(err)';
@@ -229,16 +230,18 @@ function describeEl(el: HTMLElement | null): string {
  *  Tween tay 200ms ease-out: mượt hơn instant (giật) mà không bò như smooth của browser.
  *  Bấm dồn thì tween cũ bị hủy, nối tiếp từ vị trí hiện tại. */
 const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
-const TV_SCROLL_MS = 150;
-// Bấm dồn (<120ms/phát) thì cuộn instant thay vì tween mới chồng tween cũ —
-// vừa đỡ khựng trên box yếu, vừa theo kịp tốc độ bấm remote.
+// Tween ngắn 110ms: đủ mượt 1 phát bấm, không bò. Bấm dồn thì instant luôn
+// để tween không chồng tween (nguyên nhân khựng trên box yếu).
+const TV_SCROLL_MS = 110;
+// Ngưỡng bấm dồn: remote giữ nút bắn 100-150ms/phát -> <220ms là dồn.
+const TV_RAPID_MS = 220;
 let lastProgScrollAt = 0;
 let scrollRetryTimer = 0;
 
 function shouldInstantScroll(): boolean {
   try {
     const now = Date.now();
-    const rapid = now - lastProgScrollAt < 120;
+    const rapid = now - lastProgScrollAt < TV_RAPID_MS;
     lastProgScrollAt = now;
     return rapid;
   } catch {
@@ -312,8 +315,9 @@ function smoothRowScrollTo(el: HTMLElement, to: number, instant = false) {
     const from = el.scrollLeft;
     const d = to - from;
     if (!d) return;
-    // Lệch nhỏ thì khỏi animate (đỡ giật liên tục khi đi ngang từng card)
-    if (Math.abs(d) < 10 || instant || reduceMotion()) {
+    // Đi ngang từng card lệch ~200px nhưng bấm liên tục: animate liên tục
+    // là giật. Lệch <60px hoặc đang bấm dồn thì instant luôn.
+    if (Math.abs(d) < 60 || instant || reduceMotion()) {
       el.scrollLeft = to;
       return;
     }
@@ -357,7 +361,8 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
       }
     } catch {}
     const instant = _depth === 0 ? shouldInstantScroll() : false;
-    const r = el.getBoundingClientRect();
+    // Dùng rect cache: focus path vừa đo xong, tránh thêm 1 GBCR đồng bộ mỗi phím
+    const r = cachedRect(el);
     const vh = window.innerHeight || 800;
     // Dọc: ưu tiên khung scroll trong GẦN NHẤT mà ĐỦ CHỖ chứa dy
     // (trang chi tiết fullpage, modal... cuộn bằng container riêng).
@@ -437,9 +442,9 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
         }
         smoothWindowScrollBy(dy, instant);
       }
-      // Lưới an toàn: tween có thể bị hủy (bấm dồn) hoặc RAF rớt frame ->
-      // sau 320ms mà target vẫn ngoài màn hình thì cuộn lại 1 lần duy nhất.
-      if (_depth === 0) {
+      // Lưới an toàn: chỉ retry khi KHÔNG bấm dồn. Bấm dồn mà retry
+      // là tự giật thêm 1 phát cuộn sau 320ms -> cảm giác lag gấp đôi.
+      if (_depth === 0 && !instant) {
         const target = el;
         try {
           if (scrollRetryTimer) window.clearTimeout(scrollRetryTimer);
@@ -458,17 +463,23 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
         }, 320);
       }
     }
-    // Ngang: căn giữa item trong MỌI tổ tiên cuộn được (thường chỉ có hàng phim)
+    // Ngang kiểu Netflix: chỉ lia focus, còn trong khung nhìn thì KHÔNG cuộn.
+    // Chạm mép mới cuộn tối thiểu để lọt vào (không căn giữa mỗi phát như trước).
     let p: HTMLElement | null = el.parentElement;
     while (p && p !== document.body && p !== document.documentElement) {
       try {
         if (p.scrollWidth > p.clientWidth + 8) {
-          const pr = p.getBoundingClientRect();
-          smoothRowScrollTo(
-            p,
-            Math.max(0, Math.round(p.scrollLeft + (r.left - pr.left) - (pr.width - r.width) / 2)),
-            instant,
-          );
+          const pr = cachedRect(p);
+          const EDGE = 12;
+          let to = -1;
+          if (r.left < pr.left + EDGE) {
+            to = Math.max(0, Math.round(p.scrollLeft + (r.left - pr.left) - EDGE));
+          } else if (r.right > pr.right - EDGE) {
+            to = Math.max(0, Math.round(p.scrollLeft + (r.right - pr.right) + EDGE));
+          }
+          if (to >= 0 && Math.abs(to - p.scrollLeft) > 2) {
+            smoothRowScrollTo(p, to, instant);
+          }
         }
       } catch {}
       p = p.parentElement;
@@ -482,8 +493,136 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
  * gần nhất phía trên/dưới, KHÔNG rớt vào navbar chỉ vì navbar thẳng cột.
  * Trả về true nếu đã chuyển focus.
  */
+/** Cache hàng phim: đo rect theo HÀNG (~15 hàng) thay vì theo CARD (~300 card).
+ *  Bấm lên/xuống chỉ chấm điểm card trong 1-2 hàng kề, giảm ~20 lần getBoundingClientRect. */
+type TvRowEntry = { el: HTMLElement; top: number; bottom: number; cards: HTMLElement[] };
+let tvRowCache: { rows: TvRowEntry[]; t: number } | null = null;
+const TV_ROW_TTL_MS = 800;
+function getTvRowCache(active: HTMLElement | null): TvRowEntry[] {
+  const now = Date.now();
+  try {
+    if (tvRowCache && now - tvRowCache.t < TV_ROW_TTL_MS && tvRowCache.rows.length) {
+      return tvRowCache.rows;
+    }
+  } catch {}
+  let scrollY = 0;
+  try {
+    scrollY = window.scrollY || window.pageYOffset || 0;
+  } catch {}
+  const rows: TvRowEntry[] = [];
+  try {
+    const rowEls = Array.from(document.querySelectorAll<HTMLElement>('[data-tv-row]'));
+    for (const rowEl of rowEls) {
+      let r: DOMRect;
+      try {
+        r = cachedRect(rowEl);
+      } catch {
+        continue;
+      }
+      if (!r || r.width <= 4 || r.height <= 4) continue;
+      let cards: HTMLElement[] = [];
+      try {
+        cards = Array.from(rowEl.querySelectorAll<HTMLElement>('[data-tv-card]')).filter(
+          (c) => c !== active,
+        );
+      } catch {}
+      if (!cards.length) continue;
+      rows.push({ el: rowEl, top: r.top + scrollY, bottom: r.bottom + scrollY, cards });
+    }
+    rows.sort((a, b) => a.top - b.top);
+    tvRowCache = { rows, t: now };
+  } catch {}
+  return rows;
+}
+export function invalidateTvRowCache(): void {
+  tvRowCache = null;
+}
+
+/**
+ * Điều hướng dọc theo CHỈ SỐ CỘT (thay vì đo tâm hình học):
+ * card focus đang nở rộng (160->320px) làm tâm X lệch ~80px nên scorer cũ
+ * đoán nhầm cột (1->2->1...). Đi theo index trong hàng thì đứng yên cột nào
+ * cũng trúng cột đó, không cần đo rect hàng trăm card.
+ */
+function focusCardRowIndexVertical(active: HTMLElement, dir: 'up' | 'down'): boolean {
+  try {
+    const activeRow = active.closest?.('[data-tv-row]') as HTMLElement | null;
+    if (!activeRow) return false;
+    let allRows: HTMLElement[];
+    try {
+      allRows = Array.from(document.querySelectorAll<HTMLElement>('[data-tv-row]'));
+    } catch {
+      return false;
+    }
+    if (allRows.length < 2) return false;
+    const selfIdx = allRows.indexOf(activeRow);
+    if (selfIdx < 0) return false;
+    let cards: HTMLElement[];
+    try {
+      cards = Array.from(activeRow.querySelectorAll<HTMLElement>('[data-tv-card]'));
+    } catch {
+      return false;
+    }
+    const col = cards.indexOf(active);
+    if (col < 0) return false;
+    const step = dir === 'up' ? -1 : 1;
+    // Thứ tự DOM = thứ tự dọc (các hàng xếp chồng), hàng ẩn thì bỏ qua
+    for (let k = selfIdx + step; k >= 0 && k < allRows.length; k += step) {
+      const row = allRows[k];
+      let rr: DOMRect | null = null;
+      try {
+        rr = cachedRect(row);
+      } catch {
+        continue;
+      }
+      if (!rr || rr.width <= 4 || rr.height <= 4) continue;
+      let tcards: HTMLElement[];
+      try {
+        tcards = Array.from(row.querySelectorAll<HTMLElement>('[data-tv-card]'));
+      } catch {
+        continue;
+      }
+      if (!tcards.length) continue;
+      const j = Math.min(col, tcards.length - 1);
+      // Ưu tiên đúng cột, lệch dần 2 bên nếu card đó ẩn (giới hạn 12 thử)
+      const order: number[] = [j];
+      for (let d = 1; d < tcards.length && order.length < 12; d++) {
+        if (j - d >= 0) order.push(j - d);
+        if (j + d < tcards.length) order.push(j + d);
+      }
+      let target: HTMLElement | null = null;
+      for (const idx of order) {
+        try {
+          if (isVisible(tcards[idx])) {
+            target = tcards[idx];
+            break;
+          }
+        } catch {
+          continue;
+        }
+      }
+      if (!target) continue;
+      markProgrammaticFocus();
+      setLastTvMove(`rowidx-${dir} col=${col} from ${describeEl(active)} to ${describeEl(target)}`);
+      try {
+        target.focus({ preventScroll: true } as FocusOptions);
+      } catch {
+        target.focus();
+      }
+      tvScrollIntoView(target);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean {
   try {
+    // Đi theo cột trước (chuẩn + rẻ); rớt mới dùng scorer hình học cũ
+    // (cho lưới không có [data-tv-row] như trang filter).
+    if (focusCardRowIndexVertical(active, dir)) return true;
     const cr = cachedRect(active);
     if (!cr || cr.width <= 4 || cr.height <= 4) return false;
     const cx = cr.left + cr.width / 2;
@@ -496,11 +635,56 @@ function focusCardRowVertical(active: HTMLElement, dir: 'up' | 'down'): boolean 
     } catch {}
     const activeDocTop = cr.top + scrollY;
     const activeDocBottom = cr.bottom + scrollY;
+    // Fast-path: chỉ xét card trong 1-2 hàng kề (cache theo hàng).
+    // Fallback full-scan khi trang không có [data-tv-row] (detail/modal).
     let cards: HTMLElement[];
     try {
-      cards = Array.from(
-        document.querySelectorAll<HTMLElement>('[data-tv-card]'),
-      ).filter((el) => el !== active && isVisible(el));
+      const rows = getTvRowCache(active);
+      // Hàng chứa active (để biết vị trí), fallback theo tọa độ gần nhất
+      let activeIdx = rows.findIndex((rw) => {
+        try {
+          return rw.el.contains(active);
+        } catch {
+          return false;
+        }
+      });
+      if (activeIdx < 0) {
+        let bestD = Infinity;
+        rows.forEach((rw, i) => {
+          const d = dir === 'up'
+            ? Math.abs(activeDocTop - rw.bottom)
+            : Math.abs(rw.top - activeDocBottom);
+          if (d < bestD) {
+            bestD = d;
+            activeIdx = i;
+          }
+        });
+      }
+      if (rows.length && activeIdx >= 0) {
+        const picked: HTMLElement[] = [];
+        if (dir === 'up') {
+          for (let i = activeIdx - 1; i >= 0 && picked.length < 48; i--) {
+            if (rows[i].bottom < activeDocTop - 4) {
+              picked.push(...rows[i].cards);
+              break; // chỉ lấy đúng 1 hàng gần nhất
+            }
+          }
+        } else {
+          for (let i = activeIdx + 1; i < rows.length && picked.length < 48; i++) {
+            if (rows[i].top > activeDocBottom + 4) {
+              picked.push(...rows[i].cards);
+              break;
+            }
+          }
+        }
+        cards = picked.filter((el) => el !== active && isVisible(el));
+        // Hết hàng kề (đang ở hàng đầu/cuối) -> để caller fallback intermediate/generic
+        if (!cards.length) return false;
+      } else {
+        cards = Array.from(
+          document.querySelectorAll<HTMLElement>('[data-tv-card]'),
+        ).filter((el) => el !== active && isVisible(el));
+      }
     } catch {
       return false;
     }
@@ -631,20 +815,29 @@ function focusIntermediateAbove(active: HTMLElement): boolean {
 export function focusNearest(dir: TvDirection): boolean {
   try {
     const active = document.activeElement as HTMLElement | null;
-    let pool = getFocusable();
-    if (!pool.length) return false;
+    // TV perf: pool focusable (full DOM scan ~300 els) chỉ tính khi fallback
+    // thật sự cần. Fast-path (explicit/data-tv, player, modal, row-index)
+    // chạy trước với 0 QSA toàn trang.
+    let pool: HTMLElement[] | null = null;
+    const getPool = (): HTMLElement[] => (pool ??= getFocusable());
     if (!active || active === document.body) {
       ensureTvFocus();
       return true;
     }
+    // Giữ semantics cũ (trang không có gì focus được -> false) với đúng
+    // 1 querySelector rẻ, không scan + đo rect toàn trang.
+    try {
+      if (!document.querySelector(FOCUSABLE_SEL)) return false;
+    } catch {}
     // Player fullscreen đang mở: NHỐT focus trong player. Bấm loạn D-pad cũng
     // không lọt ra navbar/modal nền (bug: Enter kích hoạt nút nền dù player che).
     try {
       const playerRoot = document.getElementById('gau-player-root');
       if (playerRoot) {
         if (playerRoot.contains(active)) {
-          pool = pool.filter((el) => playerRoot.contains(el));
-          if (!pool.length) return true; // không có gì đi được -> nuốt phím
+          const inPool = getPool().filter((el) => playerRoot.contains(el));
+          if (!inPool.length) return true; // không có gì đi được -> nuốt phím
+          pool = inPool;
         } else {
           // Focus lọt ra ngoài bằng đường nào đó -> kéo về nút trong player
           const back =
@@ -777,7 +970,7 @@ export function focusNearest(dir: TvDirection): boolean {
     try {
       const dlg = active.closest?.('[role="dialog"]') as HTMLElement | null;
       if (dlg) {
-        const poolIn = pool.filter((el) => dlg.contains(el));
+        const poolIn = getPool().filter((el) => dlg.contains(el));
         if (poolIn.length) {
           const cr0 = cachedRect(active);
           const c0 = center(cr0);
@@ -839,7 +1032,9 @@ export function focusNearest(dir: TvDirection): boolean {
     const c = center(cr);
     let best: HTMLElement | null = null;
     let bestScore = Infinity;
-    for (const el of pool) {
+    const fallbackPool = getPool();
+    if (!fallbackPool.length) return false;
+    for (const el of fallbackPool) {
       if (el === active) continue;
       const r = cachedRect(el);
       const p = center(r);

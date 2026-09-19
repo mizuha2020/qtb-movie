@@ -641,8 +641,40 @@ export const SimplePlayer: React.FC<SimplePlayerProps> = memo(({
       } catch (e) {
         void 0;
       }
+      // TV memory: gỡ handler khi effect re-run/unmount, kẻo giữ closure
+      // của player đã đóng (lặp Home->Player->Back).
+      return () => {
+        try {
+          const noop = () => {};
+          navigator.mediaSession.setActionHandler('play', noop);
+          navigator.mediaSession.setActionHandler('pause', noop);
+          navigator.mediaSession.setActionHandler('seekbackward', noop);
+          navigator.mediaSession.setActionHandler('seekforward', noop);
+          (navigator.mediaSession.setActionHandler as any)('enterpictureinpicture', noop);
+        } catch {}
+      };
     }
+    return undefined;
   }, [movie, currentEpisode, currentServer, skip, togglePip, isPlaying]);
+
+  // TV memory: dọn timer + PiP window khi player unmount. Trước đây
+  // controlsTimeout/previewSeek/previewDebounce/hud sót lại và PiP giữ
+  // container DOM đã unmount -> leak mỗi vòng Home->Player->Back.
+  useEffect(() => {
+    return () => {
+      try {
+        if (controlsTimeout.current) { clearTimeout(controlsTimeout.current); controlsTimeout.current = null; }
+        if (previewSeekTimer.current) { clearTimeout(previewSeekTimer.current); previewSeekTimer.current = null; }
+        if (previewDebounce.current) { clearTimeout(previewDebounce.current); previewDebounce.current = null; }
+        if (hudTimer.current) { clearTimeout(hudTimer.current); hudTimer.current = null; }
+      } catch {}
+      try {
+        const pipWin = (window as any).pipWindowInstance;
+        if (pipWin && typeof pipWin.close === 'function') pipWin.close();
+        (window as any).pipWindowInstance = null;
+      } catch {}
+    };
+  }, []);
 
   const nextEpisode = useMemo(() => {
     const idx = currentServer.server_data.findIndex((e) => e.slug === currentEpisode.slug);
@@ -858,7 +890,19 @@ export const SimplePlayer: React.FC<SimplePlayerProps> = memo(({
         video.addEventListener('loadedmetadata', onLoaded, { once: true });
         video.addEventListener('error', () => setErrorMsg('Không thể phát file offline'), { once: true });
       }
-      return;
+      // TV memory: nhánh offline trước đây return trần -> unmount leak HLS +
+      // decoder. Trả cleanup đầy đủ như nhánh remote.
+      return () => {
+        try {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        } catch {}
+        if (hlsRef.current) {
+          hlsRef.current.destroy();
+          hlsRef.current = null;
+        }
+      };
     }
 
     setIsLoading(true);
@@ -990,6 +1034,11 @@ export const SimplePlayer: React.FC<SimplePlayerProps> = memo(({
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+      try {
+        video.pause();
+        video.removeAttribute('src');
+        video.load();
+      } catch {}
     };
   }, [currentEpisode.link_m3u8, useEmbed, allServers, currentServer, initialTime, onSelectEpisode, localVideoUrl]);
 
@@ -1353,13 +1402,24 @@ export const SimplePlayer: React.FC<SimplePlayerProps> = memo(({
       setActiveSegment(prev => prev !== nxt ? nxt : prev);
     } else setActiveSegment(null);
     if (video.buffered.length > 0) {
-      setBuffered(video.buffered.end(video.buffered.length - 1));
+      const b = video.buffered.end(video.buffered.length - 1);
+      // TV perf: chỉ setState buffered khi lệch >2s (tránh re-render 4Hz)
+      setBuffered((prev) => (Math.abs((prev || 0) - b) > 2 ? b : prev));
     }
   };
 
+  // TV perf: kéo scrub chỉ đổi PREVIEW (giống GauPlayer), thả tay mới commit
+  // 1 lần — tránh flush buffer + double cost main/preview mỗi pixel như trước.
   const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
     const val = parseFloat(e.target.value);
-    if (videoRef.current) {
+    setCurrentTime(val);
+    const pct = duration > 0 ? (val / duration) * 100 : 0;
+    setPreview({ time: val, xPct: pct, img: preview?.img || null, visible: true, loading: true });
+    seekPreviewTo(val);
+    resetControlsTimer();
+  };
+  const handleSeekCommit = (val: number) => {
+    if (videoRef.current && isFinite(val)) {
       videoRef.current.currentTime = val;
       setCurrentTime(val);
     }
@@ -1692,6 +1752,15 @@ export const SimplePlayer: React.FC<SimplePlayerProps> = memo(({
                   step={0.1}
                   value={currentTime}
                   onChange={handleSeek}
+                  onPointerUp={(e) => {
+                    handleSeekCommit(parseFloat((e.target as HTMLInputElement).value));
+                  }}
+                  onTouchEnd={(e) => {
+                    try {
+                      const t = e.target as HTMLInputElement;
+                      handleSeekCommit(parseFloat(t.value));
+                    } catch {}
+                  }}
                   onInput={(e) => {
                     // mobile drag: update preview live
                     const val = parseFloat((e.target as HTMLInputElement).value);

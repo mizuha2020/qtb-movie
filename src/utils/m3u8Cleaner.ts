@@ -396,13 +396,25 @@ function storeCleanCache(rawUrl: string, entry: CleanTextCache): void {
     cleanTextCache.set(rawUrl, { ...entry, time: Date.now() });
   } catch {}
 }
-export async function loadCleanedM3u8Url(rawUrl: string): Promise<CleanedM3u8 | null> {
-  if (!rawUrl || !rawUrl.startsWith('http')) return null;
-  // Cache hit -> dựng blob tức thì, không fetch
+/** Xóa cache text bản clean (để lần resolve sau fetch tươi).
+ *  Dùng khi nghi URL segment đã hết hạn (pause lâu -> resume giật):
+ *  không có arg = xóa hết (tối đa 20 entries, rẻ). */
+export function clearCleanedCache(rawUrl?: string): void {
   try {
-    const hit = getCachedCleaned(rawUrl);
-    if (hit) return hit;
+    if (rawUrl) cleanTextCache.delete(rawUrl);
+    else cleanTextCache.clear();
   } catch {}
+}
+
+export async function loadCleanedM3u8Url(rawUrl: string, force = false): Promise<CleanedM3u8 | null> {
+  if (!rawUrl || !rawUrl.startsWith('http')) return null;
+  // Cache hit -> dựng blob tức thì, không fetch (force=true để bỏ qua khi cần URL tươi)
+  if (!force) {
+    try {
+      const hit = getCachedCleaned(rawUrl);
+      if (hit) return hit;
+    } catch {}
+  }
   // Refresh rule chặn QC nền (không await để không chậm phát video)
   try {
     adblockService.refresh().catch(() => {});

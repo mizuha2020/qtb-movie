@@ -84,6 +84,9 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
 
   const containerRef = useRef<HTMLDivElement>(null);
   const isTv = useTvMode();
+  // Chống race khi bấm related liên tục: response của phim cũ về trễ
+  // không được đè state của phim mới (trước đây chỉ có isMounted).
+  const detailReqRef = useRef(0);
 
   // Shell ngoài (App) gỡ khi modal sẵn sàng: loading xong hoặc lỗi.
   useEffect(() => {
@@ -145,6 +148,8 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
     if (!movie) return;
 
     let isMounted = true;
+    const reqId = ++detailReqRef.current;
+    const isCurrent = () => isMounted && detailReqRef.current === reqId;
     setIsLoading(true);
     setError(null);
     setNextEpisode(null);
@@ -266,7 +271,8 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
     const loadDetail = async () => {
       try {
         const data = await movieApi.getMovieDetail(movie.slug);
-        if (isMounted) {
+        if (!isCurrent()) return;
+        {
           // Merge with movie prop to never lose existing backdrop_url, backdrops, logos, etc.
           const mergedMovie: Movie = {
             ...data.movie,
@@ -288,7 +294,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
             const firstCat = data.movie.category[0].slug;
             fetches.push(
               movieApi.getByGenre(firstCat, 1, 12).then((relatedRes) => {
-                if (isMounted) {
+                if (isCurrent()) {
                   setRelatedMovies(
                     (relatedRes.items || []).filter((m) => m.slug !== movie.slug).slice(0, 8)
                   );
@@ -300,7 +306,7 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
           // 2. Fetch schedule (lịch chiếu) WHILE loading screen is active
           fetches.push(
             fetchScheduleForMovie(data.movie, data.episodes || []).then(({ nextEp, seasonEps }) => {
-              if (isMounted) {
+              if (isCurrent()) {
                 setNextEpisode(nextEp);
                 setSeasonEpisodes(seasonEps);
               }
@@ -311,12 +317,12 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
         }
       } catch (err: any) {
         void 0;
-        if (isMounted) {
+        if (isCurrent()) {
           setError(err.message || 'Không thể tải thông tin chi tiết phim');
           setFullMovieData(movie);
         }
       } finally {
-        if (isMounted) {
+        if (isCurrent()) {
           setIsLoading(false);
         }
       }
@@ -862,9 +868,13 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                 transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1], delay: 0.05 }}
                 className="relative flex flex-col items-center"
               >
-                {/* soft ambient glow */}
-                <div className="absolute -inset-16 bg-sky-400/10 blur-[50px] rounded-full pointer-events-none" />
-                <div className="absolute -inset-8 bg-indigo-400/5 blur-[36px] rounded-full pointer-events-none" />
+                {/* soft ambient glow (desktop only: blur 36-50px quá nặng cho GPU TV) */}
+                {!isTv && (
+                  <>
+                    <div className="absolute -inset-16 bg-sky-400/10 blur-[50px] rounded-full pointer-events-none" />
+                    <div className="absolute -inset-8 bg-indigo-400/5 blur-[36px] rounded-full pointer-events-none" />
+                  </>
+                )}
 
                 {/* minimalist spinner - thin hairline */}
                 <div className="relative w-14 h-14 flex items-center justify-center">
@@ -1710,6 +1720,8 @@ export const MovieDetailModal: React.FC<MovieDetailModalProps> = ({
                       <img
                         src={getImageUrl(m.poster_url || m.thumb_url)}
                         alt={m.name}
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-300"
                         onError={(e) => {
                           (e.target as HTMLImageElement).src =

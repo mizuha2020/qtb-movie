@@ -1,5 +1,4 @@
 import React, { Suspense, useEffect, useState, useCallback, useRef, useMemo, startTransition } from "react";
-import { motion, AnimatePresence } from "motion/react";
 import {
   Account,
   EpisodeServer,
@@ -14,17 +13,43 @@ import {
 import { authService } from "./services/authService";
 import { firestoreStorage } from "./services/firestoreStorage";
 import { movieApi, getImageUrl } from "./services/movieApi";
-import { systemApiService } from "./services/systemApiService";
-import { presenceService } from "./services/presenceService";
-import { appConfigService } from "./services/appConfigService";
 import { verifyBackendUrl } from "./services/apiConfig";
+// P0-1: presence/appConfig/system realtime KHÔNG import sync (kéo cả firebase
+// RTDB vào chunk khởi động). Dùng dynamic import sau first paint (xem các
+// useEffect bên dưới).
 import { useTabScroll } from "./hooks/useTabScroll";
-import { LoginScreen } from "./components/LoginScreen";
 import { Navbar } from "./components/Navbar";
-import { HeroBanner } from "./components/HeroBanner";
+import { TvStaticHero } from "./components/TvStaticHero";
 import { Top10Carousel } from "./components/Top10Carousel";
-import { Theater3DCarousel } from "./components/Theater3DCarousel";
-import { CinematicCarousel } from "./components/CinematicCarousel";
+// Phase 2: login/profile/carousel-3D/loaders chỉ tải khi cần — index nhẹ lúc paint đầu.
+const LoginScreen = React.lazy(() =>
+  import("./components/LoginScreen").then((m) => ({ default: m.LoginScreen }))
+);
+const ProfileSelector = React.lazy(() =>
+  import("./components/ProfileSelector").then((m) => ({
+    default: m.ProfileSelector,
+  }))
+);
+const Theater3DCarousel = React.lazy(() =>
+  import("./components/Theater3DCarousel").then((m) => ({
+    default: m.Theater3DCarousel,
+  }))
+);
+const CinematicCarousel = React.lazy(() =>
+  import("./components/CinematicCarousel").then((m) => ({
+    default: m.CinematicCarousel,
+  }))
+);
+const AppSwitcherLoading = React.lazy(() =>
+  import("./components/AppSwitcherLoading").then((m) => ({
+    default: m.AppSwitcherLoading,
+  }))
+);
+const ProfileSwitchLoader = React.lazy(() =>
+  import("./components/ProfileSwitchLoader").then((m) => ({
+    default: m.ProfileSwitchLoader,
+  }))
+);
 import { MovieRow } from "./components/MovieRow";
 import { ForYouRow } from "./components/ForYouRow";
 // Code-splitting: các component nặng chỉ tải khi cần (mở modal / mở player /
@@ -35,21 +60,34 @@ const MovieDetailModal = React.lazy(() =>
     default: m.MovieDetailModal,
   }))
 );
+// Hero chỉ desktop/mobile dùng (TV bỏ) -> lazy để TV khỏi tải/parse chunk này lúc khởi động
+const HeroBanner = React.lazy(() =>
+  import("./components/HeroBanner").then((m) => ({ default: m.HeroBanner }))
+);
 const GauPlayer = React.lazy(() =>
   import("./components/GauPlayer").then((m) => ({ default: m.GauPlayer }))
 );
-import { ProfileSelector } from "./components/ProfileSelector";
-import { FilterSection } from "./components/FilterSection";
-import { MyListView } from "./components/MyListView";
-import { HistoryView } from "./components/HistoryView";
-import { OfflineSavedView } from "./components/OfflineSavedView";
+// P0-1 TV startup: các tab dưới fold / tab phụ lazy để index.js nhẹ lúc paint đầu.
+// Home (MovieRow/Top10) vẫn sync vì cần ngay.
+const FilterSection = React.lazy(() =>
+  import("./components/FilterSection").then((m) => ({ default: m.FilterSection }))
+);
+const MyListView = React.lazy(() =>
+  import("./components/MyListView").then((m) => ({ default: m.MyListView }))
+);
+const HistoryView = React.lazy(() =>
+  import("./components/HistoryView").then((m) => ({ default: m.HistoryView }))
+);
+const OfflineSavedView = React.lazy(() =>
+  import("./components/OfflineSavedView").then((m) => ({
+    default: m.OfflineSavedView,
+  }))
+);
 const LiveTvAppWrapper = React.lazy(() =>
   import("./apps/LiveTvAppWrapper").then((m) => ({
     default: m.LiveTvAppWrapper,
   }))
 );
-import { AppSwitcherLoading } from "./components/AppSwitcherLoading";
-import { ProfileSwitchLoader } from "./components/ProfileSwitchLoader";
 import { MobileBottomNav } from "./components/MobileBottomNav";
 import { NotificationTickerBanner } from "./components/NotificationTickerBanner";
 import {
@@ -65,7 +103,7 @@ import {
 import { FollowedRow } from "./components/FollowedRow";
 import { Capacitor } from "@capacitor/core";
 import { applyTvClass } from "./utils/tvDetect";
-import { markProgrammaticFocus } from "./utils/tvRemote";
+import { markProgrammaticFocus, invalidateTvRowCache } from "./utils/tvRemote";
 import { useTvRemoteNav } from "./hooks/useTvRemote";
 import { useTvMode } from "./hooks/useTvMode";
 import { App as CapApp } from "@capacitor/app";
@@ -191,7 +229,13 @@ function DetailOpeningShell({ movie }: { movie: Movie }) {
       }}
       aria-label="Đang tải thông tin phim"
     >
-      <div className="absolute w-64 h-64 bg-sky-400/10 blur-[50px] rounded-full pointer-events-none" />
+      <div
+        className="absolute w-64 h-64 rounded-full pointer-events-none"
+        style={{
+          background:
+            "radial-gradient(circle, rgba(56,189,248,0.12) 0%, transparent 70%)",
+        }}
+      />
       <div className="relative flex flex-col items-center px-6 text-center">
         <div className="relative w-14 h-14 flex items-center justify-center">
           <div className="absolute inset-0 rounded-full border border-white/[0.07]" />
@@ -259,7 +303,7 @@ function showInstantDetailShell(
     const glow = document.createElement("div");
     glow.style.cssText =
       "position:absolute;width:256px;height:256px;border-radius:9999px;" +
-      "background:rgba(56,189,248,0.1);filter:blur(50px);pointer-events:none;";
+      "background:radial-gradient(circle, rgba(56,189,248,0.12) 0%, transparent 70%);pointer-events:none;";
     const spinnerWrap = document.createElement("div");
     spinnerWrap.style.cssText =
       "position:relative;width:56px;height:56px;" +
@@ -408,11 +452,30 @@ export default function App() {
     Record<string, { enabled: boolean }>
   >({});
 
+  // P0-1: appConfig realtime hoãn sau paint (dynamic import -> firebase RTDB
+  // không nằm trong graph khởi động). Maintenance gate vẫn chạy, chỉ trễ ~2s.
   useEffect(() => {
-    const unsub = appConfigService.subscribe((cfg) => {
-      setAppConfig(cfg);
-    });
-    return unsub;
+    let unsub: (() => void) | undefined;
+    let cancelled = false;
+    const t = window.setTimeout(() => {
+      import("./services/appConfigService")
+        .then((m) => {
+          if (cancelled) return;
+          try {
+            unsub = m.appConfigService.subscribe((cfg) => {
+              setAppConfig(cfg);
+            });
+          } catch {}
+        })
+        .catch(() => {});
+    }, 2000);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+      try {
+        unsub?.();
+      } catch {}
+    };
   }, []);
 
   // Auto-redirect when active app is disabled by admin
@@ -793,17 +856,35 @@ export default function App() {
   };
 
   // Bootstrap admin on initial start
+  // P0-1: verifyBackend + system realtime hoãn sau first paint (idle) để TV
+  // paint home trước, khỏi tranh CPU/mạng lúc khởi động.
   useEffect(() => {
     authService.bootstrapAdminAccount().catch((err) => {
       void 0;
     });
-    // Native app: kiểm tra backend còn sống, chết thì tự đổi sang cloud (tránh APK bake URL cũ)
-    verifyBackendUrl().catch(() => {});
-    // Realtime sync endpoint admin (toggle nguồn phim...) sang mọi thiết bị.
-    // Trước đây TV chỉ đọc localStorage của chính nó nên toggle không tới nơi.
+    const run = () => {
+      try {
+        verifyBackendUrl().catch(() => {});
+      } catch {}
+      try {
+        import("./services/systemApiService")
+          .then((m) => {
+            try {
+              m.systemApiService.subscribeRealtime();
+            } catch {}
+          })
+          .catch(() => {});
+      } catch {}
+    };
     try {
-      systemApiService.subscribeRealtime();
-    } catch {}
+      const ric = (window as any).requestIdleCallback;
+      if (typeof ric === "function") ric(() => run(), { timeout: 4000 });
+      else window.setTimeout(run, 2000);
+    } catch {
+      try {
+        window.setTimeout(run, 2000);
+      } catch {}
+    }
   }, []);
 
   // Load profiles whenever currentAccount changes
@@ -1009,32 +1090,40 @@ export default function App() {
       const trendingItems = trendingAllRes?.items || [];
       const newItems = newRes?.items || [];
 
-      if (netflixTop10Res?.movies?.length) {
-        setMovieCollection("netflixTop10Movies", netflixTop10Res.movies);
-      } else if (trendingItems.length) {
-        setMovieCollection("netflixTop10Movies", trendingItems.slice(0, 10));
-      }
+      // TV perf: gộp toàn bộ stage-1 thành ĐÚNG 1 setState (1 commit full-tree
+      // thay vì ~5 commit liên tiếp như trước).
+      setMovieCollections((prev) => {
+        const next = { ...prev };
+        if (netflixTop10Res?.movies?.length) {
+          next.netflixTop10Movies = netflixTop10Res.movies;
+        } else if (trendingItems.length) {
+          next.netflixTop10Movies = trendingItems.slice(0, 10);
+        }
 
-      if (netflixTop10Res?.tvShows?.length) {
-        setMovieCollection("netflixTop10TV", netflixTop10Res.tvShows);
-      } else if (newItems.length) {
-        setMovieCollection("netflixTop10TV", newItems.slice(0, 10));
-      }
+        if (netflixTop10Res?.tvShows?.length) {
+          next.netflixTop10TV = netflixTop10Res.tvShows;
+        } else if (newItems.length) {
+          next.netflixTop10TV = newItems.slice(0, 10);
+        }
 
-      if (trendingItems.length) {
-        setMovieCollection("topHotAll", trendingItems);
-      } else if (newRes?.items?.length) {
-        setMovieCollection("topHotAll", newRes.items.slice(0, 10));
-      }
+        if (trendingItems.length) {
+          next.topHotAll = trendingItems;
+        } else if (newRes?.items?.length) {
+          next.topHotAll = newRes.items.slice(0, 10);
+        }
 
-      if (newRes?.items?.length) {
-        const hotSlugs = new Set(trendingItems.map((m: any) => m.slug));
-        const filteredNew = newRes.items.filter((m: any) => !hotSlugs.has(m.slug));
-        setMovieCollection("newUpdated", filteredNew.length > 0 ? filteredNew : newRes.items);
-      }
+        if (newRes?.items?.length) {
+          const hotSlugs = new Set(trendingItems.map((m: any) => m.slug));
+          const filteredNew = newRes.items.filter((m: any) => !hotSlugs.has(m.slug));
+          next.newUpdated = filteredNew.length > 0 ? filteredNew : newRes.items;
+        }
+        return next;
+      });
 
       // Màn hình đầu đã sẵn sàng -> Tắt ngay loading để người dùng tương tác tức thì
       setIsLoadingHome(false);
+      // Layout home vừa đổi (hàng mới mount) -> bỏ cache row nav cũ
+      try { invalidateTvRowCache(); } catch {}
 
       // Stage 2 (dưới fold): chia 3 đợt theo thứ tự hiển thị để box yếu
       // đỡ nghẽn mạng + hàng hiện dần từ trên xuống (D-pad đi tới đâu có tới đó)
@@ -1048,13 +1137,25 @@ export default function App() {
           movieApi.getByCountry("han-quoc", 1, 16),
         ]);
       const topSeriesItems = takeItems(topSeriesRes);
-      if (topSeriesItems.length) setMovieCollection("topSeries", topSeriesItems);
       const topSingleItems = takeItems(topSingleRes);
-      if (topSingleItems.length) setMovieCollection("topSingle", topSingleItems);
       const animeItems = takeItems(animeRes);
-      if (animeItems.length) setMovieCollection("animeList", animeItems);
       const koreanItems = takeItems(koreanRes);
-      if (koreanItems.length) setMovieCollection("koreanList", koreanItems);
+      if (
+        topSeriesItems.length ||
+        topSingleItems.length ||
+        animeItems.length ||
+        koreanItems.length
+      ) {
+        // Gộp stage-2 thành 1 commit duy nhất
+        setMovieCollections((prev) => {
+          const next = { ...prev };
+          if (topSeriesItems.length) next.topSeries = topSeriesItems;
+          if (topSingleItems.length) next.topSingle = topSingleItems;
+          if (animeItems.length) next.animeList = animeItems;
+          if (koreanItems.length) next.koreanList = koreanItems;
+          return next;
+        });
+      }
 
       // (newUpdated đã load ở stage 1, khỏi fetch lại để đỡ 1 request)
       const [seriesRes, singleRes, theaterRes] = await Promise.allSettled([
@@ -1063,21 +1164,24 @@ export default function App() {
         movieApi.getTheaterMovies(1, 10),
       ]);
       const seriesItems = takeItems(seriesRes);
-      if (seriesItems.length) {
-        setMovieCollection(
-          "seriesList",
-          seriesItems.length > 10 ? seriesItems.slice(10) : seriesItems,
-        );
-      }
       const singleItems = takeItems(singleRes);
-      if (singleItems.length) {
-        setMovieCollection(
-          "singleList",
-          singleItems.length > 10 ? singleItems.slice(10) : singleItems,
-        );
-      }
       const theaterItems = takeItems(theaterRes);
-      if (theaterItems.length) setMovieCollection("theaterList", theaterItems);
+      if (seriesItems.length || singleItems.length || theaterItems.length) {
+        // Gộp stage-3 thành 1 commit duy nhất
+        setMovieCollections((prev) => {
+          const next = { ...prev };
+          if (seriesItems.length) {
+            next.seriesList =
+              seriesItems.length > 10 ? seriesItems.slice(10) : seriesItems;
+          }
+          if (singleItems.length) {
+            next.singleList =
+              singleItems.length > 10 ? singleItems.slice(10) : singleItems;
+          }
+          if (theaterItems.length) next.theaterList = theaterItems;
+          return next;
+        });
+      }
 
       const [actionRes, romanceRes, horrorRes, sciFiRes] =
         await Promise.allSettled([
@@ -1087,18 +1191,31 @@ export default function App() {
           movieApi.getByGenre("vien-tuong", 1, 16),
         ]);
       const actionItems = takeItems(actionRes);
-      if (actionItems.length) setMovieCollection("actionList", actionItems);
       const romanceItems = takeItems(romanceRes);
-      if (romanceItems.length) setMovieCollection("romanceList", romanceItems);
       const horrorItems = takeItems(horrorRes);
-      if (horrorItems.length) setMovieCollection("horrorList", horrorItems);
       const sciFiItems = takeItems(sciFiRes);
-      if (sciFiItems.length) setMovieCollection("sciFiList", sciFiItems);
+      if (
+        actionItems.length ||
+        romanceItems.length ||
+        horrorItems.length ||
+        sciFiItems.length
+      ) {
+        // Gộp stage-4 thành 1 commit duy nhất
+        setMovieCollections((prev) => {
+          const next = { ...prev };
+          if (actionItems.length) next.actionList = actionItems;
+          if (romanceItems.length) next.romanceList = romanceItems;
+          if (horrorItems.length) next.horrorList = horrorItems;
+          if (sciFiItems.length) next.sciFiList = sciFiItems;
+          return next;
+        });
+      }
     } catch (e) {
       void 0;
     } finally {
       setIsLoadingHome(false);
       setHomeSettled(true);
+      try { invalidateTvRowCache(); } catch {}
     }
   }, []);
 
@@ -1106,8 +1223,9 @@ export default function App() {
     fetchHomeData();
   }, [fetchHomeData]);
 
-  // Hero Banner: lấy từ TMDB Popular (en-US, region VN) đã validate tồn tại trong API phim hiện tại + subscribe RTDB realtime
+  // Hero Banner: TV bỏ hero nên khỏi fetch/subscribe TMDB hero (đỡ request + RAM + re-render)
   useEffect(() => {
+    if (isTvView) return;
     movieApi.getTmdbHeroPopular().then((items) => {
       if (items && items.length) setHeroTmdbMovies(items);
     }).catch(() => {});
@@ -1121,21 +1239,32 @@ export default function App() {
     return () => {
       unsubscribe();
     };
-  }, []);
+  }, [isTvView]);
 
   // Netflix Top 10: Subscribe RTDB realtime để luôn cập nhật dữ liệu mới nhất
+  // P0-1: hoãn 2.5s sau paint — home stage-1 (HTTP) đã vẽ hàng, realtime chỉ补 sau.
   useEffect(() => {
-    const unsubscribe = movieApi.subscribeNetflixTop10((res) => {
-      if (res?.movies?.length) {
-        setMovieCollection("netflixTop10Movies", res.movies);
-      }
-      if (res?.tvShows?.length) {
-        setMovieCollection("netflixTop10TV", res.tvShows);
-      }
-    });
-
+    let unsub: (() => void) | undefined;
+    const t = window.setTimeout(() => {
+      try {
+        unsub = movieApi.subscribeNetflixTop10((res) => {
+          if (!res) return;
+          // Gộp 1 commit (tránh 2 full-tree re-render mỗi lần RTDB push)
+          setMovieCollections((prev) => {
+            const next = { ...prev };
+            if (res?.movies?.length) next.netflixTop10Movies = res.movies;
+            if (res?.tvShows?.length) next.netflixTop10TV = res.tvShows;
+            return next;
+          });
+          try { invalidateTvRowCache(); } catch {}
+        });
+      } catch {}
+    }, 2500);
     return () => {
-      unsubscribe();
+      window.clearTimeout(t);
+      try {
+        unsub?.();
+      } catch {}
     };
   }, []);
 
@@ -1309,23 +1438,41 @@ export default function App() {
   }, [playingMovie, selectedMovieForDetail]);
 
   // Online presence & browsing activity tracking
+  // P0-1: dynamic import -> firebase database không vào chunk khởi động.
   useEffect(() => {
     if (!currentAccount || playingMovie || showProfileSelector) return;
-
-    presenceService.startSession({
-      accountId: currentAccount.id || currentAccount.username,
-      accountDisplayName: currentAccount.displayName || currentAccount.username,
-      profileId: activeProfile?.id || "default",
-      profileName:
-        activeProfile?.name || currentAccount.displayName || "Người xem",
-      profileAvatar: activeProfile?.avatar || "",
-      type: "browsing",
-      itemTitle: "Đang xem danh mục Phim",
-      itemSubtitle: `Mục: ${activeTab.toUpperCase()}`,
-    });
+    let stopped = false;
+    import("./services/presenceService")
+      .then((m) => {
+        if (stopped) return;
+        try {
+          m.presenceService.startSession({
+            accountId: currentAccount.id || currentAccount.username,
+            accountDisplayName:
+              currentAccount.displayName || currentAccount.username,
+            profileId: activeProfile?.id || "default",
+            profileName:
+              activeProfile?.name || currentAccount.displayName || "Người xem",
+            profileAvatar: activeProfile?.avatar || "",
+            type: "browsing",
+            itemTitle: "Đang xem danh mục Phim",
+            itemSubtitle: `Mục: ${activeTab.toUpperCase()}`,
+          });
+        } catch {}
+      })
+      .catch(() => {});
 
     return () => {
-      presenceService.stopSession();
+      stopped = true;
+      try {
+        import("./services/presenceService")
+          .then((m) => {
+            try {
+              m.presenceService.stopSession();
+            } catch {}
+          })
+          .catch(() => {});
+      } catch {}
     };
   }, [
     currentAccount,
@@ -2242,9 +2389,13 @@ export default function App() {
     ],
   );
 
-  // 1. GATEKEEPER: Not Logged In -> Show LoginScreen Only
+  // 1. GATEKEEPER: Not Logged In -> Show LoginScreen Only (lazy, Phase 2)
   if (!currentAccount) {
-    return <LoginScreen onLoginSuccess={handleLoginSuccess} />;
+    return (
+      <Suspense fallback={null}>
+        <LoginScreen onLoginSuccess={handleLoginSuccess} />
+      </Suspense>
+    );
   }
 
   let appContent = null;
@@ -2267,6 +2418,33 @@ export default function App() {
     netflixTop10TV,
   } = movieCollections;
 
+  // TV hero: callback ổn định qua ref (tránh phá React.memo của TvStaticHero
+  // mỗi lần App re-render) + hero = top1 PHIM LẺ (movie), không lấy series.
+  const openDetailModalRef = useRef(openDetailModal);
+  openDetailModalRef.current = openDetailModal;
+  const handlePlayMovieRef = useRef(handlePlayMovie);
+  handlePlayMovieRef.current = handlePlayMovie;
+  const stableHeroPlay = useCallback((m: Movie) => {
+    void handlePlayMovieRef.current(m);
+  }, []);
+  const stableHeroOpenDetail = useCallback((m: Movie) => {
+    openDetailModalRef.current(m);
+  }, []);
+  const heroMovie: Movie | undefined = useMemo(() => {
+    const isMovie = (m: Movie) =>
+      !m?.type || m.type === "single" || m.type === "single_movies";
+    return (
+      topSingle?.[0] ||
+      singleList?.[0] ||
+      theaterList?.[0] ||
+      topHotAll?.find(isMovie) ||
+      newUpdated?.find(isMovie) ||
+      netflixTop10Movies?.[0] ||
+      topHotAll?.[0] ||
+      newUpdated?.[0]
+    );
+  }, [topSingle, singleList, theaterList, topHotAll, newUpdated, netflixTop10Movies]);
+
   if (activeApp === "livetv") {
     appContent = (
       <Suspense fallback={null}>
@@ -2285,16 +2463,10 @@ export default function App() {
     appContent = (
       <div className="min-h-screen bg-[#070b16] text-white font-sans selection:bg-blue-600 selection:text-white">
         {/* 1. Who's Watching Profile Selector Screen */}
-        <AnimatePresence mode="wait">
-          {showProfileSelector && (
-            <motion.div
-              key="profile-selector-view"
-              initial={{ opacity: 0, scale: 0.98 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.98 }}
-              transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-              className="w-full"
-            >
+        {/* P0-1: bỏ motion ở App shell (TV đã tắt transition bằng CSS) -> khỏi parse vendor-motion lúc startup */}
+        {showProfileSelector && (
+          <div key="profile-selector-view" className="w-full">
+            <Suspense fallback={null}>
               <ProfileSelector
                 currentAccount={currentAccount}
                 profiles={profiles}
@@ -2305,13 +2477,12 @@ export default function App() {
                 onLogout={handleLogoutRequest}
                 onShowToast={showToast}
               />
-            </motion.div>
-          )}
-        </AnimatePresence>
+            </Suspense>
+          </div>
+        )}
 
         {/* 2. Fullscreen HLS Video Player - GauPlayer minimal style */}
-        <AnimatePresence mode="wait">
-          {playingMovie && playingEpisode && playingServer && (
+        {playingMovie && playingEpisode && playingServer && (
             <Suspense
               key={`player-${playingMovie.slug}-${playingEpisode.slug}`}
               fallback={null}
@@ -2332,7 +2503,6 @@ export default function App() {
               />
             </Suspense>
           )}
-        </AnimatePresence>
 
         {/* 3. Main Navigation Header */}
         {!playingMovie && !showProfileSelector && (
@@ -2353,22 +2523,28 @@ export default function App() {
           />
         )}
 
-        {/* 4. Tab Views Content - transition mượt như gấu manga, chống flash */}
+        {/* 4. Tab Views Content - P0-1: div thường (TV tắt transition), khỏi motion */}
         {!showProfileSelector && !playingMovie && (
           <main className="relative min-h-[calc(100vh-160px)] pb-24 md:pb-16">
-            <AnimatePresence mode="wait" initial={false}>
-              <motion.div
-                key={`tab-${activeTab}`}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.18, ease: "easeOut" }}
-                style={{ willChange: "opacity" }}
-              >
+            <div key={`tab-${activeTab}`}>
                 {/* HOME TAB */}
                 {activeTab === "home" && (
                   <>
+                    {/* TV: banner tĩnh 1 ảnh top-1 PHIM LẺ (không xoay/không motion).
+                        Chưa có data thì chêm spacer dưới navbar fixed. */}
+                    {isTvView &&
+                      (heroMovie ? (
+                        <TvStaticHero
+                          movie={heroMovie}
+                          onPlay={stableHeroPlay}
+                          onOpenDetail={stableHeroOpenDetail}
+                        />
+                      ) : (
+                        <div aria-hidden="true" style={{ height: 84 }} />
+                      ))}
                     {/* Featured Cinematic Hero Banner - TMDB Popular (en-US, region VN) đã validate có trong API phim hiện tại */}
+                    {!isTvView && (
+                    <Suspense fallback={null}>
                     <HeroBanner
                       movies={(() => {
                         // Luôn đảm bảo 10 phim: TMDB hero + bù local nếu thiếu (tránh lúc 8 lúc 10 do validate rớt)
@@ -2397,6 +2573,8 @@ export default function App() {
                       onToggleMyList={handleToggleMyList}
                       isInMyList={isInMyList}
                     />
+                    </Suspense>
+                    )}
 
                     {/* Followed - Báo tập mới */}
                     {followedMovies.length > 0 && (
@@ -2630,12 +2808,14 @@ export default function App() {
                           isInMyList={isInMyList}
                         />
                       ) : (
-                        <Theater3DCarousel
-                          title="Top Phim Hot Nhất Hôm Nay"
-                          movies={topHotAll}
-                          onOpenDetail={(m) => openDetailModal(m)}
-                          onPlay={handlePlayMovie}
-                        />
+                        <Suspense fallback={null}>
+                          <Theater3DCarousel
+                            title="Top Phim Hot Nhất Hôm Nay"
+                            movies={topHotAll}
+                            onOpenDetail={(m) => openDetailModal(m)}
+                            onPlay={handlePlayMovie}
+                          />
+                        </Suspense>
                       )}
 
                       <Top10Carousel
@@ -2786,12 +2966,14 @@ export default function App() {
                           isInMyList={isInMyList}
                         />
                       ) : (
-                        <CinematicCarousel
-                          title="Mãn Nhãn Phim Chiếu Rạp"
-                          movies={theaterList}
-                          onOpenDetail={(m) => openDetailModal(m)}
-                          onPlay={handlePlayMovie}
-                        />
+                        <Suspense fallback={null}>
+                          <CinematicCarousel
+                            title="Mãn Nhãn Phim Chiếu Rạp"
+                            movies={theaterList}
+                            onOpenDetail={(m) => openDetailModal(m)}
+                            onPlay={handlePlayMovie}
+                          />
+                        </Suspense>
                       )}
                     </div>
                   </>
@@ -2800,92 +2982,103 @@ export default function App() {
                 {/* SERIES TAB */}
                 {activeTab === "series" && (
                   <div className="pt-20">
-                    <FilterSection
-                      key="tab-series"
-                      fixedType="series"
-                      plain
-                      onOpenDetail={(m) => openDetailModal(m)}
-                      onSelectMovie={(m) => openDetailModal(m)}
-                      onPlay={handlePlayMovie}
-                      onPlayMovie={handlePlayMovie}
-                      onToggleMyList={handleToggleMyList}
-                      isInMyList={isInMyList}
-                    />
+                    <Suspense fallback={null}>
+                      <FilterSection
+                        key="tab-series"
+                        fixedType="series"
+                        plain
+                        onOpenDetail={(m) => openDetailModal(m)}
+                        onSelectMovie={(m) => openDetailModal(m)}
+                        onPlay={handlePlayMovie}
+                        onPlayMovie={handlePlayMovie}
+                        onToggleMyList={handleToggleMyList}
+                        isInMyList={isInMyList}
+                      />
+                    </Suspense>
                   </div>
                 )}
 
                 {/* SINGLE MOVIES TAB */}
                 {activeTab === "single" && (
                   <div className="pt-20">
-                    <FilterSection
-                      key="tab-single"
-                      fixedType="single"
-                      plain
-                      onOpenDetail={(m) => openDetailModal(m)}
-                      onSelectMovie={(m) => openDetailModal(m)}
-                      onPlay={handlePlayMovie}
-                      onPlayMovie={handlePlayMovie}
-                      onToggleMyList={handleToggleMyList}
-                      isInMyList={isInMyList}
-                    />
+                    <Suspense fallback={null}>
+                      <FilterSection
+                        key="tab-single"
+                        fixedType="single"
+                        plain
+                        onOpenDetail={(m) => openDetailModal(m)}
+                        onSelectMovie={(m) => openDetailModal(m)}
+                        onPlay={handlePlayMovie}
+                        onPlayMovie={handlePlayMovie}
+                        onToggleMyList={handleToggleMyList}
+                        isInMyList={isInMyList}
+                      />
+                    </Suspense>
                   </div>
                 )}
 
                 {/* ANIME TAB */}
                 {activeTab === "anime" && (
                   <div className="pt-20">
-                    <FilterSection
-                      key="tab-anime"
-                      fixedType="anime"
-                      plain
-                      onOpenDetail={(m) => openDetailModal(m)}
-                      onSelectMovie={(m) => openDetailModal(m)}
-                      onPlay={handlePlayMovie}
-                      onPlayMovie={handlePlayMovie}
-                      onToggleMyList={handleToggleMyList}
-                      isInMyList={isInMyList}
-                    />
+                    <Suspense fallback={null}>
+                      <FilterSection
+                        key="tab-anime"
+                        fixedType="anime"
+                        plain
+                        onOpenDetail={(m) => openDetailModal(m)}
+                        onSelectMovie={(m) => openDetailModal(m)}
+                        onPlay={handlePlayMovie}
+                        onPlayMovie={handlePlayMovie}
+                        onToggleMyList={handleToggleMyList}
+                        isInMyList={isInMyList}
+                      />
+                    </Suspense>
                   </div>
                 )}
 
                 {/* TV SHOWS TAB */}
                 {activeTab === "tv-shows" && (
                   <div className="pt-20">
-                    <FilterSection
-                      key="tab-tv-shows"
-                      fixedType="tv-shows"
-                      plain
-                      onOpenDetail={(m) => openDetailModal(m)}
-                      onSelectMovie={(m) => openDetailModal(m)}
-                      onPlay={handlePlayMovie}
-                      onPlayMovie={handlePlayMovie}
-                      onToggleMyList={handleToggleMyList}
-                      isInMyList={isInMyList}
-                    />
+                    <Suspense fallback={null}>
+                      <FilterSection
+                        key="tab-tv-shows"
+                        fixedType="tv-shows"
+                        plain
+                        onOpenDetail={(m) => openDetailModal(m)}
+                        onSelectMovie={(m) => openDetailModal(m)}
+                        onPlay={handlePlayMovie}
+                        onPlayMovie={handlePlayMovie}
+                        onToggleMyList={handleToggleMyList}
+                        isInMyList={isInMyList}
+                      />
+                    </Suspense>
                   </div>
                 )}
 
                 {/* FILTER & EXPLORE TAB */}
                 {activeTab === "filter" && (
                   <div className="pt-20">
-                    <FilterSection
-                      key={`filter-${filterCountry}-${filterGenre}-${searchKeyword}`}
-                      initialKeyword={searchKeyword}
-                      initialCountry={filterCountry}
-                      initialGenre={filterGenre}
-                      onOpenDetail={(m) => openDetailModal(m)}
-                      onSelectMovie={(m) => openDetailModal(m)}
-                      onPlay={handlePlayMovie}
-                      onPlayMovie={handlePlayMovie}
-                      onToggleMyList={handleToggleMyList}
-                      isInMyList={isInMyList}
-                    />
+                    <Suspense fallback={null}>
+                      <FilterSection
+                        key={`filter-${filterCountry}-${filterGenre}-${searchKeyword}`}
+                        initialKeyword={searchKeyword}
+                        initialCountry={filterCountry}
+                        initialGenre={filterGenre}
+                        onOpenDetail={(m) => openDetailModal(m)}
+                        onSelectMovie={(m) => openDetailModal(m)}
+                        onPlay={handlePlayMovie}
+                        onPlayMovie={handlePlayMovie}
+                        onToggleMyList={handleToggleMyList}
+                        isInMyList={isInMyList}
+                      />
+                    </Suspense>
                   </div>
                 )}
 
                 {/* MY LIST TAB */}
                 {activeTab === "my-list" && (
                   <div className="pt-20">
+                    <Suspense fallback={null}>
                     <MyListView
                       myList={myList}
                       profileName={activeProfile?.name || "Bạn"}
@@ -2909,12 +3102,14 @@ export default function App() {
                       }}
                       onExploreClick={() => handleTabChange("filter")}
                     />
+                    </Suspense>
                   </div>
                 )}
 
                 {/* WATCH HISTORY TAB */}
                 {activeTab === "history" && (
                   <div className="pt-20">
+                    <Suspense fallback={null}>
                     <HistoryView
                       history={watchHistory}
                       profileName={activeProfile?.name || "Bạn"}
@@ -2945,12 +3140,14 @@ export default function App() {
                       }}
                       onExploreClick={() => handleTabChange("home")}
                     />
+                    </Suspense>
                   </div>
                 )}
 
                 {/* OFFLINE SAVED TAB - ONLY ON NATIVE APP */}
                 {activeTab === "offline" && (
                   <div className="pt-2">
+                    <Suspense fallback={null}>
                     <OfflineSavedView
                       currentAccount={currentAccount}
                       activeProfile={activeProfile}
@@ -2958,6 +3155,7 @@ export default function App() {
                       onOpenDetail={(m) => openDetailModal(m)}
                       onShowToast={showToast}
                     />
+                    </Suspense>
                   </div>
                 )}
 
@@ -2968,14 +3166,12 @@ export default function App() {
                     LiveTV
                   </div>
                 )}
-              </motion.div>
-            </AnimatePresence>
+              </div>
           </main>
         )}
 
         {/* 5. Movie Detail Modal */}
-        <AnimatePresence mode="wait">
-          {selectedMovieForDetail && (
+        {selectedMovieForDetail && (
             <Suspense
               key={`detail-${selectedMovieForDetail.slug}`}
               fallback={
@@ -3001,7 +3197,6 @@ export default function App() {
               />
             </Suspense>
           )}
-        </AnimatePresence>
 
         {/* 6. Comprehensive Footer */}
         {!showProfileSelector && !playingMovie && (
@@ -3203,18 +3398,22 @@ export default function App() {
       )}
       {appContent}
       {isSwitchingApp && targetApp && (
-        <AppSwitcherLoading
-          targetApp={targetApp}
-          onLoadingComplete={handleSwitchAppComplete}
-        />
+        <Suspense fallback={null}>
+          <AppSwitcherLoading
+            targetApp={targetApp}
+            onLoadingComplete={handleSwitchAppComplete}
+          />
+        </Suspense>
       )}
-      <ProfileSwitchLoader
-        isOpen={isProfileSwitchLoaderOpen}
-        profileA={profileSwitchSrc}
-        profileB={profileSwitchTarget}
-        isDataReady={isProfileDataReady}
-        onComplete={handleProfileSwitchLoaderComplete}
-      />
+      <Suspense fallback={null}>
+        <ProfileSwitchLoader
+          isOpen={isProfileSwitchLoaderOpen}
+          profileA={profileSwitchSrc}
+          profileB={profileSwitchTarget}
+          isDataReady={isProfileDataReady}
+          onComplete={handleProfileSwitchLoaderComplete}
+        />
+      </Suspense>
       {dialog && (
         <CustomDialog
           isOpen={dialog.isOpen}
