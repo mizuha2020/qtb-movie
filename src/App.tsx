@@ -176,7 +176,6 @@ function resetHomeFocusToTop(): void {
       const sels = [
         "#hero-play-btn",
         "[data-tv-autofocus]",
-        "#brand-logo-btn",
       ];
       for (const s of sels) {
         try {
@@ -2642,7 +2641,11 @@ export default function App() {
                               </button>
                             </div>
                           </div>
-                          <div className="flex items-center gap-4 overflow-x-auto pb-3 scrollbar-none">
+                          <div
+                            data-tv-row
+                            data-tv-row-id="continue-watching"
+                            className="flex items-center gap-4 overflow-x-auto pb-3 scrollbar-none"
+                          >
                             {filtered.map((item, idx) => {
                               const remaining = Math.max(
                                 0,

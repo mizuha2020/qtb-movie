@@ -487,12 +487,28 @@ export function tvScrollIntoView(el: HTMLElement, _depth = 0) {
         if (p.scrollWidth > p.clientWidth + 8) {
           const pr = cachedRect(p);
           const EDGE = 12;
+          // Ngang: đo cả CỤM slot (poster + số rank tràn -left-4) thay vì chỉ poster.
+          // Số rank nằm ngoài rect poster -> đo thiếu là càng scroll số 1 càng bị cắt.
+          let slotLeft = r.left;
+          let slotRight = r.right;
+          try {
+            const slot =
+              (el.closest?.(
+                '.tv-top10-slot, .tv-row-slot',
+              ) as HTMLElement | null) || null;
+            if (slot && p.contains(slot)) {
+              const sr = slot.getBoundingClientRect();
+              // Top10: số rank overflow visible tràn trái slot -> gộp vào mép trái.
+              if (sr.left < slotLeft) slotLeft = sr.left;
+              if (sr.right > slotRight) slotRight = sr.right;
+            }
+          } catch {}
           // Mép phải tính cả phần nở width thật của card focus (rect đo lúc mới
           // focus chưa gồm transition nên phải bù tay, không thì item cuối bị cắt).
-          const wantRight = r.right + expandPad;
+          const wantRight = slotRight + expandPad;
           let to = -1;
-          if (r.left < pr.left + EDGE) {
-            to = Math.max(0, Math.round(p.scrollLeft + (r.left - pr.left) - EDGE));
+          if (slotLeft < pr.left + EDGE) {
+            to = Math.max(0, Math.round(p.scrollLeft + (slotLeft - pr.left) - EDGE));
           } else if (wantRight > pr.right - EDGE) {
             to = Math.max(0, Math.round(p.scrollLeft + (wantRight - pr.right) + EDGE));
           }
@@ -573,6 +589,50 @@ function focusCardRowIndexVertical(active: HTMLElement, dir: 'up' | 'down'): boo
     } catch {
       return false;
     }
+    // Tu hang "Tiep Tuc Xem" (card ngang 16:9, rong 256px) bam xuong hang
+    // MovieRow (card doc 160px): cung cot hinh hoc rot vao item 2 vi tam X
+    // cua card ngang nam giua 2 card doc. Ep ve item 1 cho dung y do UX.
+    try {
+      const fromRowId =
+        active.closest?.('[data-tv-row]')?.getAttribute?.('data-tv-row-id') || '';
+      if (dir === 'down' && fromRowId === 'continue-watching') {
+        const rowsNow = getTvRowCache(active);
+        const selfNow = rowsNow.findIndex((rw) => {
+          try {
+            return rw.el.contains(active);
+          } catch {
+            return false;
+          }
+        });
+        for (let k = selfNow + 1; k < rowsNow.length; k++) {
+          let first: HTMLElement | null = null;
+          try {
+            const cs = Array.from(
+              rowsNow[k].el.querySelectorAll<HTMLElement>('[data-tv-card]'),
+            );
+            for (const c of cs) {
+              if (c !== active && isVisible(c)) {
+                first = c;
+                break;
+              }
+            }
+          } catch {
+            first = null;
+          }
+          if (first) {
+            markProgrammaticFocus();
+            setLastTvMove(`rowidx-down-first from ${describeEl(active)} to ${describeEl(first)}`);
+            try {
+              first.focus({ preventScroll: true } as FocusOptions);
+            } catch {
+              first.focus();
+            }
+            tvScrollIntoView(first);
+            return true;
+          }
+        }
+      }
+    } catch {}
     if (allRows.length < 2) return false;
     const selfIdx = allRows.indexOf(activeRow);
     if (selfIdx < 0) return false;
@@ -1126,7 +1186,7 @@ export function ensureTvFocus(): boolean {
         return false;
       }
     } catch {}
-    const priority = ['#hero-play-btn', '#brand-logo-btn', '[data-tv-autofocus]'];
+    const priority = ['#hero-play-btn', '[data-tv-autofocus]'];
     for (const sel of priority) {
       const el = document.querySelector<HTMLElement>(sel);
       if (el && isVisible(el)) {

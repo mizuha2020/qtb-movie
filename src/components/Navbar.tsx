@@ -310,9 +310,11 @@ export const Navbar: React.FC<NavbarProps> = ({
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between gap-3 sm:gap-6">
         {/* Left: Brand + Nav Links */}
         <div className="flex items-center gap-4 lg:gap-7 min-w-0 flex-1">
-          {/* Gấu Brand */}
+          {/* Gấu Brand (TV: data-tv-skip để D-pad không dừng ở logo) */}
           <button
             id="brand-logo-btn"
+            data-tv-skip={isTvMode ? "" : undefined}
+            tabIndex={isTvMode ? -1 : 0}
             onClick={() => {
               if (activeTab === 'home') {
                 onRefreshHome?.();

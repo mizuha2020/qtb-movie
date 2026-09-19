@@ -413,7 +413,7 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
             onMouseMove={onMobileMouseMove}
             onMouseUp={onMobileMouseUpOrLeave}
             onMouseLeave={onMobileMouseUpOrLeave}
-            className="flex items-end overflow-x-auto scrollbar-none overscroll-x-contain gap-0 cursor-grab active:cursor-grabbing py-2"
+            className="flex items-end overflow-x-auto scrollbar-none overscroll-x-contain gap-0 cursor-grab active:cursor-grabbing py-2 pl-4 pr-4"
             style={{ WebkitOverflowScrolling: "touch", scrollbarWidth: "none" }}
           >
             {top10Movies.map((movie, index) => (
@@ -421,7 +421,7 @@ export const Top10Carousel: React.FC<Top10CarouselProps> = ({
                 key={`${movie.slug || "top10"}-${index}`}
                 className={`relative flex-shrink-0 flex items-end ${isTv ? "w-40 h-56 tv-top10-slot" : "w-64 h-80"}`}
               >
-                <div className="absolute left-0 bottom-0 z-0 flex items-center justify-start h-full">
+                <div className="absolute -left-4 bottom-0 z-0 flex items-center justify-start h-full">
                   <span
                     className={`font-black italic text-black select-none ${isTv ? "text-[7rem]" : "text-[12rem]"}`}
                     style={{
