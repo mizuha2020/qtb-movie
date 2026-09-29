@@ -272,6 +272,12 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
   const pausedAtRef = useRef(0);
   const resumeTimerRef = useRef<number | null>(null);
   const bufferingTimerRef = useRef<number | null>(null);
+  // Vị trí cần khôi phục khi rebuild pipeline (retry / resume sau pause dài).
+  // Dùng ref vì cleanup effect wipe video element, còn prop initialTime thì stale.
+  const resumePosRef = useRef(0);
+  // Stall monitor liên tục: kẹt thật (đang play mà readyState thấp) quá 6s
+  // thì kích watchdog nấc 1, kể cả khi watchdog 1-shot lúc resume đã disarm.
+  const stallRecoverTimerRef = useRef<number | null>(null);
   const handleRetryRef = useRef<() => void>(() => {});
   const prevRateRef = useRef(1);
   const showControlsRef = useRef(true);
@@ -1058,7 +1064,14 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           return true;
         });
         setQualityLevels(deduped.length ? deduped : levels);
-        if (initialTime > 5) video.currentTime = initialTime;
+        // Ưu tiên vị trí resume (retry / pause dài rebuild), rồi mới tới initialTime lúc mở player
+        const resumePos = resumePosRef.current;
+        if (resumePos > 5) {
+          try { video.currentTime = resumePos; } catch {}
+          resumePosRef.current = 0;
+        } else if (initialTime > 5) {
+          try { video.currentTime = initialTime; } catch {}
+        }
         video.play().catch(() => {});
       });
       let ec = 0;
@@ -1100,7 +1113,12 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
           window.clearTimeout(bufferingTimerRef.current);
           bufferingTimerRef.current = null;
         }
+        if (stallRecoverTimerRef.current) {
+          window.clearTimeout(stallRecoverTimerRef.current);
+          stallRecoverTimerRef.current = null;
+        }
         pausedAtRef.current = 0;
+        resumePosRef.current = 0;
       } catch {}
       revokeBlobUrl([blobUrl, ...extraBlobs]);
       if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; }
@@ -1123,16 +1141,14 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
 
   const handleRetry = useCallback(() => {
     const v = videoRef.current;
-    // Thử phát tiếp từ chỗ đang xem dở
+    // Thử phát tiếp từ chỗ đang xem dở. Lưu vào ref vì cleanup effect sẽ
+    // wipe video element (removeAttribute+load) nên set currentTime ở đây vô nghĩa;
+    // MANIFEST_PARSED của pipeline mới sẽ restore từ ref.
     const resumeAt = v && isFinite(v.currentTime) ? v.currentTime : currentTime;
-    if (v) {
-      try { v.removeAttribute('src'); v.load(); } catch {}
-      if (resumeAt > 5) {
-        try { v.currentTime = resumeAt; } catch {}
-      }
-    }
+    if (resumeAt > 5) resumePosRef.current = resumeAt;
     setErrorMsg(null);
     setIsLoading(true);
+    setLoadStage('source');
     setRetryKey(k => k + 1);
   }, [currentTime]);
   handleRetryRef.current = handleRetry;
@@ -2132,6 +2148,7 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
       if (hideControlsTimer.current) window.clearTimeout(hideControlsTimer.current);
       if (previewSeekTimer.current) window.clearTimeout(previewSeekTimer.current);
       if (previewHideTimer.current) window.clearTimeout(previewHideTimer.current);
+      if (stallRecoverTimerRef.current) window.clearTimeout(stallRecoverTimerRef.current);
     };
   }, [togglePlay, skip, toggleFullscreen, toggleMute, activeSegment, handleSkipSegment, duration, renderScrubPreview, smartSeek, enterSeekMode, moveSeekFocus, commitSeek]);
 
@@ -2190,16 +2207,35 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
             onDurationChange={() => setDuration(videoRef.current?.duration || 0)}
             onPlay={() => {
               setIsPlaying(true);
-              // Resume: tiếp tục tải + gác watchdog (chỉ khi play sau pause,
+              // Resume sau pause DÀI (>10s): URL segment trong playlist cũ có thể
+              // đã hết hạn (pause càng lâu càng chắc) -> build lại pipeline với
+              // playlist tươi ngay, giữ nguyên vị trí, khỏi chờ kẹt mới cứu.
+              let wasPaused = false;
+              let pausedMs = 0;
+              try {
+                wasPaused = !!pausedAtRef.current;
+                pausedMs = wasPaused ? Date.now() - pausedAtRef.current : 0;
+                pausedAtRef.current = 0;
+              } catch {}
+              try {
+                if (wasPaused && pausedMs > 10000 && hlsRef.current) {
+                  const vv = videoRef.current;
+                  const at = vv && isFinite(vv.currentTime) ? vv.currentTime : 0;
+                  if (at > 5) resumePosRef.current = at;
+                  try { clearCleanedCache(); } catch {}
+                  setIsLoading(true);
+                  setLoadStage('source');
+                  setRetryKey(k => k + 1);
+                  return;
+                }
+              } catch {}
+              // Resume thường: tiếp tục tải + gác watchdog (chỉ khi play sau pause,
               // autoplay lần đầu không cần)
               try {
                 hlsRef.current?.startLoad();
               } catch {}
               try {
-                if (pausedAtRef.current) {
-                  pausedAtRef.current = 0;
-                  armResumeWatchdog();
-                }
+                if (wasPaused) armResumeWatchdog();
               } catch {}
             }}
             onPause={() => {
@@ -2218,6 +2254,10 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                   window.clearTimeout(bufferingTimerRef.current);
                   bufferingTimerRef.current = null;
                 }
+                if (stallRecoverTimerRef.current) {
+                  window.clearTimeout(stallRecoverTimerRef.current);
+                  stallRecoverTimerRef.current = null;
+                }
               } catch {}
               setIsLoading(false);
             }}
@@ -2227,6 +2267,10 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
               try {
                 if (bufferingTimerRef.current) {
                   window.clearTimeout(bufferingTimerRef.current);
+                }
+                if (stallRecoverTimerRef.current) {
+                  window.clearTimeout(stallRecoverTimerRef.current);
+                  stallRecoverTimerRef.current = null;
                 }
               } catch {}
               bufferingTimerRef.current = window.setTimeout(() => {
@@ -2238,12 +2282,28 @@ export const GauPlayer: React.FC<GauPlayerProps> = memo(({
                   }
                 } catch {}
               }, 1200);
+              // Stall monitor liên tục: vẫn kẹt sau 6s thì kích watchdog nấc 1
+              // (micro-seek + restart load), rồi nấc 2 tự rebuild playlist tươi.
+              // Cover trường hợp watchdog 1-shot lúc resume đã disarm vì còn
+              // sót vài giây buffer cũ, kẹt thật xảy ra sau đó.
+              stallRecoverTimerRef.current = window.setTimeout(() => {
+                try {
+                  const vv = videoRef.current;
+                  if (vv && !vv.paused && !vv.ended && vv.readyState < 3) {
+                    checkResumeStuck(vv.currentTime, 1);
+                  }
+                } catch {}
+              }, 6000);
             }}
             onPlaying={() => {
               try {
                 if (bufferingTimerRef.current) {
                   window.clearTimeout(bufferingTimerRef.current);
                   bufferingTimerRef.current = null;
+                }
+                if (stallRecoverTimerRef.current) {
+                  window.clearTimeout(stallRecoverTimerRef.current);
+                  stallRecoverTimerRef.current = null;
                 }
               } catch {}
               setIsLoading(false);

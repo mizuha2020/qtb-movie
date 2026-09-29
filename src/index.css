@@ -516,9 +516,24 @@ video::-webkit-media-controls {
 }
 /* Khung player/video không bao giờ vẽ viền focus (WebView TV hay vẽ viền vàng mặc định) */
 .tv-mode #gau-player-root:focus, .tv-mode #gau-player-root video:focus,
-.tv-mode #gau-player-root .video-area:focus {
+.tv-mode #gau-player-root .video-area:focus,
+.tv-mode #live-tv-player-container:focus, .tv-mode #live-tv-player-container video:focus {
   outline: none !important;
   box-shadow: none !important;
+}
+/* Gấu LiveTV trên TV: thẻ kênh focus viền trắng rõ (remote D-pad nhìn thấy ngay) */
+.tv-mode [data-tv-livetv-channel]:focus,
+.tv-mode [data-tv-livetv-channel]:focus-visible {
+  outline: 3px solid #fff !important;
+  outline-offset: 2px !important;
+  box-shadow: none !important;
+  z-index: 20;
+  position: relative;
+}
+.tv-mode [data-tv-livetv-play]:focus,
+.tv-mode [data-tv-livetv-play]:focus-visible {
+  outline: 3px solid #fff !important;
+  outline-offset: 2px !important;
 }
 /* TV giữ nguyên cỡ desktop: không phóng to chữ/nút ở navbar, hàng phim,
    trang chi tiết, login, dialog (revert 10-foot scaling theo yêu cầu). */

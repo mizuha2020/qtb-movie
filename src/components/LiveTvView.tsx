@@ -40,6 +40,8 @@ import { presenceService } from '../services/presenceService';
 import { DEFAULT_CHANNELS } from '../data/defaultChannels';
 import { parseClearkeyToHexMap, parseM3uWithDrmAndUA, isLicenseServerUrl } from '../utils/drmParser';
 import { playInNativeExoPlayer, playInExternalPlayer, enterNativePip, setNativeVideoPlaying, checkNativePipSupported } from '../utils/nativeVideoPlayer';
+import { isTvModeActive, TV_MEDIA_EVENT, markProgrammaticFocus } from '../utils/tvRemote';
+import { useTvMode } from '../hooks/useTvMode';
 import { CloudflareWorkerModal } from './livetv/CloudflareWorkerModal';
 import { DrmChannelTesterModal } from './livetv/DrmChannelTesterModal';
 
@@ -73,6 +75,9 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
   const [showSourceModal, setShowSourceModal] = useState(false);
   const [showDrmTesterModal, setShowDrmTesterModal] = useState(false);
   const [showCloudflareModal, setShowCloudflareModal] = useState(false);
+  // TV gọn: false = trang chủ (danh mục + kênh), true = player toàn màn hình
+  const [tvPlayerOpen, setTvPlayerOpen] = useState(false);
+  const tvPlayerBoxRef = useRef<HTMLDivElement>(null);
 
   // Favorites state
   const [favorites, setFavorites] = useState<string[]>(() => {
@@ -142,6 +147,12 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
   const [streamError, setStreamError] = useState<string | null>(null);
   const [isPip, setIsPip] = useState(false);
   const [pipSupported, setPipSupported] = useState(true);
+  const isTv = useTvMode();
+
+  // TV remote refs (tránh stale closure trong listener gau_tv_media)
+  const tvTogglePlayRef = useRef<() => void>(() => {});
+  const tvNextRef = useRef<() => void>(() => {});
+  const tvPrevRef = useRef<() => void>(() => {});
 
   // Check PiP support on mount and default to true on Web/PWA
   useEffect(() => {
@@ -453,7 +464,8 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
   });
 
   // Safe Play helper to prevent AbortError when switching streams rapidly
-  const safePlay = (mediaEl: HTMLVideoElement | null) => {
+  // TV: WebView/Tizen thường chặn autoplay có tiếng -> retry muted 1 lần
+  const safePlay = (mediaEl: HTMLVideoElement | null, retryMuted = true) => {
     if (!mediaEl) return;
     try {
       mediaEl.volume = isMuted ? 0 : volume;
@@ -470,7 +482,17 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
               return;
             }
             if (err?.name === 'NotAllowedError') {
-              // Autoplay restricted by browser policy
+              // Autoplay restricted — TV: thử muted autoplay để remote OK là chạy
+              if (retryMuted && mediaEl && !mediaEl.muted) {
+                try {
+                  mediaEl.muted = true;
+                  mediaEl.play().then(() => {
+                    setIsPlaying(true);
+                    setIsMuted(true);
+                  }).catch(() => setIsPlaying(false));
+                  return;
+                } catch {}
+              }
               setIsPlaying(false);
               return;
             }
@@ -533,7 +555,18 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
 
       try {
         if (!shaka.Player.isBrowserSupported()) {
-          setStreamError('Trình duyệt hiện tại không hỗ trợ Shaka Player / EME DRM.');
+          // TV cũ / WebView không có MSE/EME: kênh không DRM thì thử native <video>,
+          // kênh DRM mới báo lỗi (TV không giải mã được ClearKey).
+          if (!activeChannel.drmKey) {
+            try {
+              video.src = streamUrl;
+              video.load();
+              setIsLoadingStream(false);
+              safePlay(video);
+              return;
+            } catch {}
+          }
+          setStreamError('Trình duyệt TV hiện tại không hỗ trợ Shaka Player / EME DRM. Hãy thử kênh HLS (.m3u8) hoặc đổi nguồn phát.');
           setIsLoadingStream(false);
           return;
         }
@@ -759,14 +792,39 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
         safePlay(video);
       }
     } else if (streamUrl.includes('.m3u8') || Hls.isSupported()) {
-      // ===== 3. HLS.JS FOR M3U8 STREAMS =====
-      if (Hls.isSupported()) {
+      // ===== 3. HLS.JS FOR M3U8 STREAMS (TV: native HLS ưu tiên) =====
+      // TV Tizen/WebOS/Safari phát HLS native tốt hơn hls.js (không có MSE).
+      const canNativeHls =
+        video.canPlayType('application/vnd.apple.mpegurl') !== '' ||
+        video.canPlayType('application/x-mpegURL') !== '';
+      const tvMode = (() => { try { return isTvModeActive(); } catch { return false; } })();
+      if (tvMode && canNativeHls && streamUrl.includes('.m3u8')) {
+        const onMeta = () => {
+          setIsLoadingStream(false);
+          safePlay(video);
+        };
+        video.addEventListener('loadedmetadata', onMeta, { once: true });
+        video.src = streamUrl;
+        try { video.load(); } catch {}
+        // Lưới an toàn: 8s chưa chạy thì báo lỗi để user đổi kênh
+        window.setTimeout(() => {
+          try {
+            if (video.paused && !video.currentTime) {
+              // vẫn chờ, không ép lỗi — một số TV load chậm
+            }
+          } catch {}
+        }, 8000);
+      } else if (Hls.isSupported()) {
         let isProxyAttempt = false;
         const initialPlayUrl = streamUrl;
 
+        // TV box yếu: buffer gọn để đỡ RAM + decode
         const hls = new Hls({
           enableWorker: true,
           lowLatencyMode: true,
+          ...(tvMode
+            ? { maxBufferLength: 15, maxMaxBufferLength: 30, maxBufferSize: 20 * 1000 * 1000 }
+            : {}),
         });
         hlsRef.current = hls;
 
@@ -789,22 +847,41 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
                   targetUA
                 )}`
               );
-              hls.loadSource(proxyUrl);
-              hls.attachMedia(video);
+              try {
+                hls.loadSource(proxyUrl);
+              } catch {
+                video.src = streamUrl;
+                safePlay(video);
+                setIsLoadingStream(false);
+              }
             } else {
-              // Final fallback to native video tag
+              // Final fallback to native video tag (TV phát được nhiều luồng thô)
+              try { hls.destroy(); } catch {}
+              hlsRef.current = null;
               video.src = streamUrl;
+              try { video.load(); } catch {}
               safePlay(video);
               setIsLoadingStream(false);
             }
           }
         });
-      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      } else if (canNativeHls) {
         video.src = streamUrl;
         video.addEventListener('loadedmetadata', () => {
           setIsLoadingStream(false);
           safePlay(video);
-        });
+        }, { once: true });
+        try { video.load(); } catch {}
+      } else {
+        // TV không MSE lẫn native HLS: thử native video tag trực tiếp
+        video.src = streamUrl;
+        try { video.load(); } catch {}
+        video.addEventListener('loadedmetadata', () => {
+          setIsLoadingStream(false);
+          safePlay(video);
+        }, { once: true });
+        // Lưới an toàn kẻo kẹt loading vô hạn trên TV
+        window.setTimeout(() => setIsLoadingStream(false), 10000);
       }
     } else {
       video.src = streamUrl;
@@ -847,7 +924,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
         shakaPlayerRef.current = null;
       }
     };
-  }, [activeChannel, currentAccount]);
+  }, [activeChannel, currentAccount, tvPlayerOpen]);
 
   const togglePlay = () => {
     const video = videoRef.current;
@@ -970,8 +1047,173 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
   const selectChannelAndPlay = (ch: Channel) => {
     setActiveChannel(ch);
     setMobileTab('player');
+    try {
+      if (isTvModeActive()) {
+        // TV gọn: mở player toàn màn hình, playback effect tự chạy khi video mount
+        setTvPlayerOpen(true);
+        return;
+      }
+    } catch {}
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
+
+  // TV gọn: đóng player toàn màn hình, trả focus về đúng thẻ kênh vừa xem
+  const closeTvPlayer = () => {
+    const url = activeChannel?.url;
+    // Thoát fullscreen thật nếu đang giữ (TV nào hỗ trợ)
+    try {
+      if (document.fullscreenElement) {
+        const p = document.exitFullscreen() as any;
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } else if ((document as any).webkitFullscreenElement && (document as any).webkitExitFullscreen) {
+        (document as any).webkitExitFullscreen();
+      }
+    } catch {}
+    setTvPlayerOpen(false);
+    window.setTimeout(() => {
+      try {
+        let card: HTMLElement | null = null;
+        if (url) {
+          try {
+            const esc = typeof CSS !== 'undefined' && typeof CSS.escape === 'function'
+              ? CSS.escape(url)
+              : url.replace(/"/g, '');
+            card = document.querySelector<HTMLElement>(`[data-tv-livetv-url="${esc}"]`);
+          } catch {}
+        }
+        const target = card || document.querySelector<HTMLElement>('[data-tv-livetv-channel]');
+        if (target) {
+          try { markProgrammaticFocus(); } catch {}
+          try { target.focus({ preventScroll: true } as FocusOptions); }
+          catch { target.focus(); }
+        }
+      } catch {}
+    }, 120);
+  };
+
+  // TV remote: giữ ref mới nhất cho media keys (tránh stale closure)
+  tvTogglePlayRef.current = togglePlay;
+  tvNextRef.current = handleNextChannel;
+  tvPrevRef.current = handlePrevChannel;
+
+  // TV: phím media remote (Play/Pause/Next/Prev) + autofocus khi vào trang
+  useEffect(() => {
+    const onMedia = (e: Event) => {
+      try {
+        if (!isTvModeActive()) return;
+      } catch { return; }
+      const action = (e as CustomEvent<string>).detail;
+      if (action === 'toggle') tvTogglePlayRef.current?.();
+      else if (action === 'next') tvNextRef.current?.();
+      else if (action === 'prev') tvPrevRef.current?.();
+    };
+    window.addEventListener(TV_MEDIA_EVENT as any, onMedia as any);
+    return () => window.removeEventListener(TV_MEDIA_EVENT as any, onMedia as any);
+  }, []);
+
+  // TV: vào trang là focus ngay kênh đầu để remote dùng được liền;
+  // mở player thì bỏ focus + xin fullscreen thật; đóng player thì closeTvPlayer lo focus.
+  useEffect(() => {
+    if (!isTv) return;
+    if (tvPlayerOpen) {
+      const t = window.setTimeout(() => {
+        try {
+          if (!isTvModeActive()) return;
+          // Player không còn nút nào: bỏ focus để D-pad không bấm nhầm nền
+          try { (document.activeElement as HTMLElement | null)?.blur?.(); } catch {}
+          // Xin fullscreen thật của TV (Tizen/WebOS/Android TV): fail thì thôi,
+          // overlay fixed inset-0 vốn đã phủ kín màn hình
+          const box = tvPlayerBoxRef.current;
+          if (box) {
+            try {
+              if (box.requestFullscreen) {
+                const p = box.requestFullscreen() as any;
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+              } else if ((box as any).webkitRequestFullscreen) {
+                (box as any).webkitRequestFullscreen();
+              } else if (videoRef.current && (videoRef.current as any).webkitEnterFullscreen) {
+                (videoRef.current as any).webkitEnterFullscreen();
+              }
+            } catch {}
+          }
+        } catch {}
+      }, 350);
+      return () => window.clearTimeout(t);
+    }
+    const t = window.setTimeout(() => {
+      try {
+        if (!isTvModeActive()) return;
+        const ae = document.activeElement as HTMLElement | null;
+        if (ae && ae !== document.body) return; // đã có focus, không giật
+        const target = document.querySelector<HTMLElement>('[data-tv-livetv-channel]');
+        if (target) {
+          try { markProgrammaticFocus(); } catch {}
+          try { target.focus({ preventScroll: true } as FocusOptions); }
+          catch { target.focus(); }
+        }
+      } catch {}
+    }, 500);
+    return () => window.clearTimeout(t);
+  }, [isTv, tvPlayerOpen, activeChannel]);
+
+  // TV gọn: bấm Back (remote) khi đang xem toàn màn hình -> về trang chủ.
+  // App bỏ qua gau_tv_back ở livetv mode nên đây là handler duy nhất.
+  useEffect(() => {
+    if (!isTv) return;
+    const onTvBack = () => {
+      try {
+        if (isTvModeActive() && tvPlayerOpen) closeTvPlayer();
+      } catch {}
+    };
+    const onKey = (e: KeyboardEvent) => {
+      try {
+        if (!isTvModeActive() || !tvPlayerOpen) return;
+        const k = e.key;
+        const kc = (e as any).keyCode;
+        if (k === 'Escape' || k === 'GoBack' || k === 'BrowserBack' || kc === 10009 || kc === 461) {
+          e.preventDefault();
+          e.stopPropagation();
+          closeTvPlayer();
+        }
+      } catch {}
+    };
+    window.addEventListener('gau_tv_back', onTvBack);
+    window.addEventListener('keydown', onKey, { capture: true });
+    return () => {
+      window.removeEventListener('gau_tv_back', onTvBack);
+      window.removeEventListener('keydown', onKey, { capture: true } as any);
+    };
+  });
+
+  // TV gọn: khóa scroll nền khi player toàn màn hình mở
+  useEffect(() => {
+    if (!isTv || !tvPlayerOpen) return;
+    let prev = '';
+    try {
+      prev = document.body.style.overflow;
+      document.body.style.overflow = 'hidden';
+    } catch {}
+    return () => {
+      try { document.body.style.overflow = prev; } catch {}
+    };
+  }, [isTv, tvPlayerOpen]);
+
+  // TV gọn: kênh lỗi thì focus nút Thử lại để remote OK được ngay
+  useEffect(() => {
+    if (!isTv || !tvPlayerOpen || !streamError) return;
+    const t = window.setTimeout(() => {
+      try {
+        if (!isTvModeActive()) return;
+        const btn = document.querySelector<HTMLElement>('[data-tv-livetv-retry]');
+        if (btn) {
+          try { markProgrammaticFocus(); } catch {}
+          try { btn.focus({ preventScroll: true } as FocusOptions); }
+          catch { btn.focus(); }
+        }
+      } catch {}
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [isTv, tvPlayerOpen, streamError]);
 
   // MediaSession API setup for Live TV
   useEffect(() => {
@@ -1010,6 +1252,174 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
       }
     }
   }, [activeChannel, currentSourceObj]);
+
+  // ================= TV GỌN =================
+  // Trang chủ: list category ngang + kênh của category đó.
+  // Bấm kênh -> video fullscreen toàn màn hình, Back -> về trang chủ.
+  // Player không có nút nào cả.
+  if (isTv) {
+    return (
+      <div className="min-h-screen bg-[#070c18] text-slate-100 pt-16 sm:pt-20 pb-10 px-4 sm:px-6 font-sans">
+        {/* Header gọn */}
+        <div className="flex items-center gap-3 py-3">
+          <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-orange-500 to-amber-600 p-2 flex items-center justify-center text-white shrink-0">
+            <Radio className="w-6 h-6" />
+          </div>
+          <h1 className="text-xl font-black text-white tracking-tight">Gấu LiveTV</h1>
+          <span className="bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[10px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-500" />
+            LIVE
+          </span>
+          <span className="text-xs text-slate-400 font-medium">{filteredChannels.length} kênh</span>
+        </div>
+
+        {/* List category ngang */}
+        <div
+          className="flex items-center gap-2 overflow-x-auto pb-3 scrollbar-none"
+          data-tv-row
+          data-tv-row-id="livetv-tv-groups"
+        >
+          {groups.map((grp) => {
+            const isSelected = selectedGroup === grp;
+            return (
+              <button
+                key={grp}
+                onClick={() => setSelectedGroup(grp)}
+                className={`text-sm px-4 py-2 rounded-xl font-bold transition-all shrink-0 cursor-pointer ${
+                  isSelected
+                    ? 'bg-orange-600 text-white shadow-md'
+                    : 'bg-slate-900 text-slate-300 border border-slate-800'
+                }`}
+              >
+                {grp}
+                {grp === '⭐ Yêu thích' && favorites.length > 0 && (
+                  <span className="ml-1.5 text-[11px] bg-black/30 px-1.5 rounded-full">
+                    {favorites.length}
+                  </span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Kênh của category */}
+        {loading && channels.length === 0 ? (
+          <div className="py-16 text-center text-slate-400 text-sm flex flex-col items-center gap-2">
+            <RefreshCw className="w-6 h-6 text-orange-500 animate-spin" />
+            <span>Đang tải danh sách kênh...</span>
+          </div>
+        ) : filteredChannels.length > 0 ? (
+          <div data-tv-row data-tv-row-id="livetv-tv-channels">
+            <div className="grid grid-cols-3 sm:grid-cols-4 lg:grid-cols-5 gap-3">
+              {filteredChannels.map((ch, idx) => {
+                const isActive = activeChannel?.url === ch.url;
+                return (
+                  <div
+                    key={ch.url || idx}
+                    role="button"
+                    tabIndex={0}
+                    data-tv-card={`livetv-tv-${idx}`}
+                    data-tv-livetv-channel
+                    data-tv-livetv-url={ch.url}
+                    aria-label={`Phát kênh ${ch.name}`}
+                    onClick={() => selectChannelAndPlay(ch)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
+                        e.preventDefault();
+                        selectChannelAndPlay(ch);
+                      }
+                    }}
+                    className={`relative p-3 rounded-2xl border flex flex-col items-center justify-center text-center cursor-pointer focus:outline-none ${
+                      isActive
+                        ? 'bg-orange-950/60 border-orange-500'
+                        : 'bg-slate-900/80 border-slate-800'
+                    }`}
+                  >
+                    <img
+                      src={ch.logo}
+                      alt={ch.name}
+                      className="w-14 h-14 rounded-xl object-contain bg-slate-950 p-1 border border-slate-800 my-1"
+                      loading="lazy"
+                      decoding="async"
+                      draggable={false}
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src =
+                          'https://images.unsplash.com/photo-1593784991095-a205069470b6?w=100&auto=format&fit=crop&q=60';
+                      }}
+                    />
+                    <h4
+                      className={`text-xs font-bold truncate w-full mt-1 ${
+                        isActive ? 'text-amber-300' : 'text-slate-100'
+                      }`}
+                    >
+                      {ch.name}
+                    </h4>
+                    <p className="text-[10px] text-slate-400 truncate w-full">{ch.group}</p>
+                    {isActive && (
+                      <span className="mt-1 bg-orange-600 text-white text-[9px] font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
+                        <Play className="w-2.5 h-2.5 fill-white" /> Đang phát
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : (
+          <div className="py-12 text-center text-slate-400 text-sm bg-slate-900/40 rounded-2xl border border-slate-800">
+            <p className="font-semibold text-slate-300">Không có kênh trong mục này</p>
+            <p className="text-xs text-slate-500 mt-1">Chọn danh mục khác bằng remote</p>
+          </div>
+        )}
+
+        {/* Player toàn màn hình: chỉ video, không nút nào.
+            Back remote -> về trang chủ; remote có phím media thì Next/Prev chuyển kênh. */}
+        {tvPlayerOpen && activeChannel && (
+          <div ref={tvPlayerBoxRef} className="fixed inset-0 z-[70] bg-black">
+            <video
+              ref={videoRef}
+              className="absolute inset-0 w-full h-full object-contain bg-black"
+              playsInline
+              autoPlay
+              preload="auto"
+              tabIndex={-1}
+              data-tv-skip
+            />
+
+            {/* Đang tải */}
+            {isLoadingStream && (
+              <div className="absolute inset-0 bg-black/70 flex flex-col items-center justify-center gap-3 p-4 text-center pointer-events-none">
+                <div className="w-10 h-10 border-4 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                <p className="text-sm text-amber-300 font-bold">
+                  Đang kết nối {activeChannel.name}...
+                </p>
+              </div>
+            )}
+
+            {/* Lỗi: chỉ nút thử lại, Back để về trang chủ */}
+            {streamError && !isLoadingStream && (
+              <div className="absolute inset-0 bg-slate-950/95 flex flex-col items-center justify-center gap-3 p-6 text-center">
+                <p className="text-base font-bold text-white">Kênh không kết nối được</p>
+                <p className="text-xs text-slate-400 max-w-md">{streamError}</p>
+                <button
+                  data-tv-livetv-retry
+                  onClick={() => {
+                    const ch = activeChannel;
+                    setActiveChannel(null);
+                    window.setTimeout(() => setActiveChannel(ch), 80);
+                  }}
+                  className="mt-2 bg-orange-600 text-white px-6 py-3 rounded-2xl text-sm font-bold cursor-pointer"
+                >
+                  Thử lại
+                </button>
+                <p className="text-[11px] text-slate-500">Bấm Back trên remote để về danh sách kênh</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#070c18] text-slate-100 pt-16 sm:pt-20 pb-20 px-3 sm:px-6 lg:px-8 max-w-7xl mx-auto space-y-4 sm:space-y-6 font-sans">
@@ -1138,6 +1548,9 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
                   className="w-full h-full object-contain bg-black"
                   playsInline
                   autoPlay
+                  preload="auto"
+                  tabIndex={-1}
+                  data-tv-skip
                   {...({ autopictureinpicture: 'true' } as any)}
                 />
 
@@ -1285,6 +1698,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
 
                     <button
                       onClick={togglePlay}
+                      data-tv-livetv-play
                       className="w-9 h-9 rounded-xl bg-orange-600 hover:bg-orange-500 flex items-center justify-center text-white shadow-lg transition-all cursor-pointer"
                       title={isPlaying ? 'Tạm dừng' : 'Phát'}
                     >
@@ -1540,7 +1954,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
             </div>
 
             {/* Category Groups Horizontal Pills */}
-            <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-none">
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-1.5 scrollbar-none" data-tv-row data-tv-row-id="livetv-groups">
               {groups.map((grp) => {
                 const isFav = grp === '⭐ Yêu thích';
                 const isSelected = selectedGroup === grp;
@@ -1574,7 +1988,7 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
                 <span>Đang tải danh sách kênh...</span>
               </div>
             ) : filteredChannels.length > 0 ? (
-              <div className="max-h-[460px] lg:max-h-[520px] overflow-y-auto pr-1 space-y-2">
+              <div className="max-h-[460px] lg:max-h-[520px] overflow-y-auto pr-1 space-y-2" data-tv-row data-tv-row-id="livetv-channels">
                 {viewMode === 'grid' ? (
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-2 gap-2">
                     {filteredChannels.map((ch, idx) => {
@@ -1584,8 +1998,19 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
                       return (
                         <div
                           key={idx}
+                          role="button"
+                          tabIndex={0}
+                          data-tv-card={`livetv-${idx}`}
+                          data-tv-livetv-channel
+                          aria-label={`Phát kênh ${ch.name}`}
                           onClick={() => selectChannelAndPlay(ch)}
-                          className={`relative p-2.5 rounded-xl border transition-all text-left flex flex-col items-center justify-center text-center cursor-pointer group ${
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
+                              e.preventDefault();
+                              selectChannelAndPlay(ch);
+                            }
+                          }}
+                          className={`relative p-2.5 rounded-xl border transition-all text-left flex flex-col items-center justify-center text-center cursor-pointer group focus:outline-none focus:ring-2 focus:ring-orange-500 ${
                             isActive
                               ? 'bg-gradient-to-b from-orange-900/40 to-slate-900 border-orange-500 shadow-lg shadow-orange-500/10'
                               : 'bg-slate-900/80 hover:bg-slate-800/90 border-slate-800/90'
@@ -1639,8 +2064,19 @@ export const LiveTvView: React.FC<LiveTvViewProps> = ({ currentAccount }) => {
                       return (
                         <div
                           key={idx}
+                          role="button"
+                          tabIndex={0}
+                          data-tv-card={`livetv-list-${idx}`}
+                          data-tv-livetv-channel
+                          aria-label={`Phát kênh ${ch.name}`}
                           onClick={() => selectChannelAndPlay(ch)}
-                          className={`w-full p-2.5 rounded-xl border transition-all text-left flex items-center justify-between gap-3 cursor-pointer ${
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter' || e.key === 'NumpadEnter' || e.key === ' ') {
+                              e.preventDefault();
+                              selectChannelAndPlay(ch);
+                            }
+                          }}
+                          className={`w-full p-2.5 rounded-xl border transition-all text-left flex items-center justify-between gap-3 cursor-pointer focus:outline-none focus:ring-2 focus:ring-orange-500 ${
                             isActive
                               ? 'bg-orange-600/20 border-orange-500 text-white shadow-md'
                               : 'bg-slate-900/80 hover:bg-slate-800/90 border-slate-800/90 text-slate-300'
